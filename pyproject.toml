@@ -1,0 +1,48 @@
+[project]
+name = "superego-lgdemo"
+version = "0.1.0"
+description = "Superego Chat System with LangGraph"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+
+dependencies = [
+    "typer>=0.9.0,<1.0.0",
+    "colorama>=0.4.6,<1.0.0",
+    "rich>=13.7.0,<14.0.0",
+    "langchain-core>=0.1.0,<1.0.0",
+    "langchain-anthropic>=0.1.0,<1.0.0",
+    "langgraph>=0.1.0,<1.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "langgraph-cli>=0.1.55,<1.0.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "mcp>=1.6.0"
+    "python-frontmatter>=1.0",
+    "PyYAML>=6.0",
+    "pydantic>=2.0.0", # Explicitly target v2+
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "sse-starlette>=1.0.0,<2.2.0", # Constraint added due to langgraph-api dependency
+
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Entry points for CLI tools
+[project.scripts]
+superego = "cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
