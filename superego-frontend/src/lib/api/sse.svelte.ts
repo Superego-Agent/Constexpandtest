@@ -268,29 +268,34 @@ const eventHandlers: { [key: string]: Function } = {
 export const streamRun = async (
     userInput: string,
     runConfig: RunConfig,
-    threadId: string | null
+    threadId: string | null,
+    isTestMode: boolean = false // Add this parameter
 ): Promise<AbortController> => {
     activeStore.clearGlobalError();
     const controller = new AbortController();
-    // Access .state for persisted store
-    const currentActiveSessionId = sessionStore.activeSessionId; // Use new session state
+    
+    // Skip session check in test mode
+    if (!isTestMode) {
+        // Access .state for persisted store
+        const currentActiveSessionId = sessionStore.activeSessionId; // Use new session state
 
-    if (!currentActiveSessionId) {
-        const errorMsg = "Cannot start run: No active session selected.";
-        console.error(errorMsg);
-        activeStore.setGlobalError(errorMsg); 
-        controller.abort();
-        return controller;
-    }
+        if (!currentActiveSessionId) {
+            const errorMsg = "Cannot start run: No active session selected.";
+            console.error(errorMsg);
+            activeStore.setGlobalError(errorMsg); 
+            controller.abort();
+            return controller;
+        }
 
-    // Access .state for persisted store
-    const currentSessionData = sessionStore.uiSessions[currentActiveSessionId]; // Use new session state (renamed variable to avoid conflict)
-    if (!currentSessionData) {
-        const errorMsg = `Cannot start run: Active session state not found for ID ${currentActiveSessionId}.`;
-        console.error(errorMsg);
-        activeStore.setGlobalError(errorMsg); 
-        controller.abort();
-        return controller;
+        // Access .state for persisted store
+        const currentSessionData = sessionStore.uiSessions[currentActiveSessionId]; // Use new session state (renamed variable to avoid conflict)
+        if (!currentSessionData) {
+            const errorMsg = `Cannot start run: Active session state not found for ID ${currentActiveSessionId}.`;
+            console.error(errorMsg);
+            activeStore.setGlobalError(errorMsg); 
+            controller.abort();
+            return controller;
+        }
     }
 
     const threadIdToSend: string | null = threadId;
@@ -302,9 +307,10 @@ export const streamRun = async (
     const requestBody = {
         input: { type: 'human', content: userInput },
         configurable: checkpointConfigurable,
+        is_test_mode: isTestMode // Add this flag for the backend
     };
 
-    logExecution(`Stream run for session ${currentActiveSessionId} (Thread: ${threadIdToSend ?? 'NEW'})`, async () => {
+    logExecution(`Stream run for ${isTestMode ? 'test mode' : `session ${isTestMode ? 'N/A' : currentActiveSessionId}`} (Thread: ${threadIdToSend ?? 'NEW'})`, async () => {
         try {
             await fetchEventSource(`${BASE_URL}/runs/stream`, {
                 method: 'POST',
@@ -320,7 +326,7 @@ export const streamRun = async (
                         activeStore.setGlobalError(`Connection Error: ${errorMsg}`); // Use activeStore.setGlobalError
                         throw new Error(errorMsg);
                     }
-                    console.log(`SSE stream opened for session ${currentActiveSessionId}`);
+                    console.log(`SSE stream opened for ${isTestMode ? 'test mode' : `session ${currentActiveSessionId}`}`);
                 },
 
                 onmessage: (event: EventSourceMessage) => {
@@ -344,7 +350,22 @@ export const streamRun = async (
                         if (handler) {
                             // Call the appropriate handler, passing necessary context
                             if (eventType === 'run_start') {
-                                handler(eventData as SSERunStartData, currentActiveSessionId, threadIdToSend);
+                                if (isTestMode) {
+                                    // For test mode, create a temporary thread cache entry directly
+                                    const newCacheEntry: ThreadCacheData = {
+                                        history: {
+                                            checkpoint_id: 'test-checkpoint',
+                                            thread_id: targetThreadId || 'test-thread',
+                                            values: { messages: eventData.initialMessages || [] },
+                                            runConfig: eventData.runConfig
+                                        },
+                                        status: 'streaming',
+                                        error: null
+                                    };
+                                    threadStore.setEntry(targetThreadId || 'test-thread', newCacheEntry);
+                                } else {
+                                    handler(eventData as SSERunStartData, currentActiveSessionId, threadIdToSend);
+                                }
                             } else if (eventType === 'chunk' || eventType === 'ai_tool_chunk' || eventType === 'tool_result') {
                                 if (targetThreadId) {
                                     handler(eventType, eventData as any, targetThreadId); // Pass eventType to combined handler
@@ -377,12 +398,12 @@ export const streamRun = async (
                 },
 
                 onclose: () => {
-                    console.log(`SSE stream closed for session ${currentActiveSessionId}.`);
+                    console.log(`SSE stream closed for ${isTestMode ? 'test mode' : `session ${currentActiveSessionId}`}.`);
                 },
 
                 onerror: (err) => {
                     if (controller.signal.aborted) { return; }
-                    console.error(`SSE stream error for session ${currentActiveSessionId}:`, err);
+                    console.error(`SSE stream error for ${isTestMode ? 'test mode' : `session ${currentActiveSessionId}`}:`, err);
                     const errorMsg = err instanceof Error ? err.message : String(err);
                     activeStore.setGlobalError(`Stream Error: ${errorMsg}`); // Use activeStore.setGlobalError
                     // Don't throw from onerror, allow graceful closure.
@@ -390,11 +411,3 @@ export const streamRun = async (
             });
         } catch (error) {
             if (!(error instanceof DOMException && error.name === 'AbortError')) {
-                console.error(`Error setting up SSE stream for session ${currentActiveSessionId}:`, error);
-                activeStore.setGlobalError(`Stream Setup Error: ${error instanceof Error ? error.message : String(error)}`); // Use activeStore.setGlobalError
-            }
-        }
-    });
-
-    return controller;
-};

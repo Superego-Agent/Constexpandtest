@@ -128,6 +128,107 @@ export const submitConstitution = (
 	);
 };
 
+/**
+ * Tests a constitution in a sandbox environment without saving it.
+ */
+export const testConstitution = (
+    constitutionText: string,
+    userInput: string,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution('Test constitution in sandbox', () =>
+        apiFetch<any>(
+            `${BASE_URL}/constitutions/test`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    constitution_text: constitutionText,
+                    user_input: userInput
+                })
+            },
+            signal
+        )
+    );
+};
+
+/**
+ * Fetches the list of approved constitutions from the marketplace.
+ */
+export const fetchMarketplaceConstitutions = (
+    filters?: { 
+        tags?: string[], 
+        search?: string, 
+        sort?: 'popular' | 'recent' | 'alphabetical' 
+    },
+    signal?: AbortSignal
+): Promise<any[]> => {
+    // Build query parameters based on filters
+    const params = new URLSearchParams();
+    if (filters?.tags?.length) {
+        filters.tags.forEach(tag => params.append('tag', tag));
+    }
+    if (filters?.search) {
+        params.append('search', filters.search);
+    }
+    if (filters?.sort) {
+        params.append('sort', filters.sort);
+    }
+    
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    
+    return logExecution('Fetch marketplace constitutions', () =>
+        apiFetch<any[]>(`${BASE_URL}/marketplace/constitutions${queryString}`, {}, signal)
+    );
+};
+
+/**
+ * Fetches detailed information about a specific marketplace constitution.
+ */
+export const fetchMarketplaceConstitutionDetails = (
+    constitutionId: string,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Fetch details for marketplace constitution ${constitutionId}`, () =>
+        apiFetch<any>(`${BASE_URL}/marketplace/constitutions/${constitutionId}`, {}, signal)
+    );
+};
+
+/**
+ * Stars or unstars a constitution in the marketplace.
+ */
+export const toggleConstitutionStar = (
+    constitutionId: string,
+    shouldStar: boolean,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`${shouldStar ? 'Star' : 'Unstar'} constitution ${constitutionId}`, () =>
+        apiFetch<any>(
+            `${BASE_URL}/marketplace/constitutions/${constitutionId}/star`,
+            {
+                method: shouldStar ? 'POST' : 'DELETE'
+            },
+            signal
+        )
+    );
+};
+
+/**
+ * Downloads a constitution from the marketplace.
+ */
+export const downloadConstitution = (
+    constitutionId: string,
+    signal?: AbortSignal
+): Promise<string> => {
+    return logExecution(`Download constitution ${constitutionId}`, () =>
+        apiFetch<string>(
+            `${BASE_URL}/marketplace/constitutions/${constitutionId}/download`,
+            {
+                method: 'POST'
+            },
+            signal
+        )
+    );
+};
 
 // --- Thread API Functions ---
 

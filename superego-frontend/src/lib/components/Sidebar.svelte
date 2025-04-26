@@ -7,6 +7,9 @@
   import IconEdit from "~icons/fluent/edit-24-regular";
   import IconDelete from "~icons/fluent/delete-24-regular";
   import IconAdd from "~icons/fluent/add-24-regular";
+  import IconSearch from "~icons/fluent/search-24-regular";
+  import IconSubmit from "~icons/fluent/arrow-upload-24-regular";
+  import IconAdmin from "~icons/fluent/settings-24-regular";
 
   // --- Component State ---
   let editingSessionId: string | null = $state(null);
@@ -87,14 +90,18 @@
     // and sessionManager.deleteSession will be updated/removed later.
     sessionStore.deleteSession(sessionId);
   }
+  
+  // For this demo, we'll use a simple variable to simulate admin status
+  // In a real app, this would come from an authentication/authorization service
+  const isAdmin = true;
 </script>
 
 <div class="sidebar">
-
+  <!-- Sessions Section -->
   <div class="sidebar-section threads-section">
+    <h3 class="sidebar-section-title">Sessions</h3>
     <!-- === Session List === -->
     <ul class="thread-list">
-      <!-- Iterate over sortedSessions derived from $uiSessions -->
       <!-- New Session Button as first list item -->
       <li class="new-session-list-item">
         <button
@@ -163,6 +170,33 @@
       {/each}
     </ul>
   </div>
+  
+  <!-- Marketplace Section -->
+  <div class="sidebar-section">
+    <h3 class="sidebar-section-title">Marketplace</h3>
+    <ul class="sidebar-links">
+      <li>
+        <a href="/marketplace" class="sidebar-link">
+          <IconSearch />
+          <span>Browse Constitutions</span>
+        </a>
+      </li>
+      <li>
+        <a href="/submissions" class="sidebar-link">
+          <IconSubmit />
+          <span>My Submissions</span>
+        </a>
+      </li>
+      {#if isAdmin}
+        <li>
+          <a href="/admin/review" class="sidebar-link">
+            <IconAdmin />
+            <span>Review Panel</span>
+          </a>
+        </li>
+      {/if}
+    </ul>
+  </div>
 </div>
 
 <style lang="scss">
@@ -190,12 +224,15 @@
     ); // Use mixin
   }
 
-  .threads-section {
-    padding-top: 0;
-    flex-grow: 1;
+  .sidebar-section {
     display: flex;
     flex-direction: column;
     min-height: 0;
+  }
+
+  .threads-section {
+    padding-top: 0;
+    flex-grow: 1;
   }
 
   .thread-list {
@@ -308,7 +345,6 @@
       flex-shrink: 0;
       margin-left: 8px;
     }
-
   }
 
   .rename-form {
@@ -375,6 +411,45 @@
     margin: 0;
     display: block;
     border-bottom: none;
+  }
+
+  /* New styles for marketplace section */
+  .sidebar-section-title {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    padding: 0 var(--space-sm);
+    margin: var(--space-md) 0 var(--space-xs) 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .sidebar-links {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    color: var(--text-primary);
+    text-decoration: none;
+    border-radius: var(--radius-md);
+    transition: background-color 0.2s ease;
+    font-size: 0.9em;
+    
+    &:hover {
+      background-color: var(--bg-elevated);
+    }
+    
+    &.active {
+      background-color: var(--primary-bg-subtle);
+      color: var(--primary);
+      font-weight: 500;
+    }
   }
 
   @media (max-width: 768px) { }

@@ -3,6 +3,7 @@ import { fetchConstitutionHierarchy } from '$lib/api/rest.svelte';
 
 // --- Constants ---
 const LOCAL_CONSTITUTIONS_KEY = 'superego_local_constitutions';
+const SUBMISSION_STATUSES_KEY = 'superego_submission_statuses';
 
 // --- Helper Function for Sorting UI Nodes ---
 function sortNodes(a: UINode, b: UINode): number {
@@ -56,7 +57,13 @@ export class ConstitutionStore {
 	globalHierarchy: ConstitutionHierarchy | null = $state(null);
 	isLoadingGlobal: boolean = $state(false);
 	globalError: string | null = $state(null);
-	// Removed #hasFetchedGlobal guard
+	
+	// --- Submission Tracking ---
+	submissionStatuses: Record<string, {
+		timestamp: string;
+		status: 'pending' | 'approved' | 'rejected';
+		message?: string;
+	}> = $state({});
 
 	constructor() {
 		// --- Load initial state from localStorage ---
@@ -72,6 +79,18 @@ export class ConstitutionStore {
 				}
 			} else {
 				this.localConstitutions = [];
+			}
+			
+			// Load submission statuses
+			const storedStatuses = localStorage.getItem(SUBMISSION_STATUSES_KEY);
+			if (storedStatuses) {
+				try {
+					this.submissionStatuses = JSON.parse(storedStatuses);
+				} catch (e) {
+					console.error("Failed to parse submission statuses from localStorage", e);
+					localStorage.removeItem(SUBMISSION_STATUSES_KEY);
+					this.submissionStatuses = {};
+				}
 			}
 		} else {
 			this.localConstitutions = [];
@@ -107,25 +126,34 @@ export class ConstitutionStore {
 			console.log('[ConstitutionStore] Saved local constitutions to localStorage.');
 		}
 	}
+	
+	// --- Private Helper to Save Submission Statuses ---
+	#saveSubmissionStatuses() {
+		if (typeof window !== 'undefined' && window.localStorage) {
+			localStorage.setItem(SUBMISSION_STATUSES_KEY, JSON.stringify(this.submissionStatuses));
+			console.log('[ConstitutionStore] Saved submission statuses to localStorage.');
+		}
+	}
 
 	// --- Methods for Local State Mutation ---
 
-	/** Adds a new local constitution. */
-	addItem(title: string, text: string): LocalConstitutionMetadata {
+	/** Adds a new local constitution with optional privacy type */
+	addItem(title: string, text: string, privacyType?: string): LocalConstitutionMetadata {
 		const newConstitution: LocalConstitutionMetadata = {
 			localStorageKey: nanoid(),
 			title: title.trim(),
 			text: text,
-			source: 'local'
+			source: 'local',
+			privacyType: privacyType as 'private' | 'unlisted' | 'public_review' || 'private'
 		};
 		this.localConstitutions = [...this.localConstitutions, newConstitution];
-		console.log(`[ConstitutionStore] Added local constitution: ${newConstitution.localStorageKey} (${newConstitution.title})`);
+		console.log(`[ConstitutionStore] Added local constitution: ${newConstitution.localStorageKey} (${newConstitution.title}) - ${privacyType}`);
 		this.#saveLocalState(); // Save after modification
 		return newConstitution;
 	}
 
-	/** Updates an existing local constitution by its key. */
-	updateItem(key: string, title: string, text: string): boolean {
+	/** Updates an existing local constitution by its key with optional additional metadata */
+	updateItem(key: string, title: string, text: string, privacyType?: string, shareableLink?: string): boolean {
 		const index = this.localConstitutions.findIndex(c => c.localStorageKey === key);
 		if (index !== -1) {
 			const updatedConstitution = {
@@ -133,6 +161,16 @@ export class ConstitutionStore {
 				title: title.trim(),
 				text: text
 			};
+			
+			// Add optional fields if provided
+			if (privacyType) {
+				updatedConstitution.privacyType = privacyType as 'private' | 'unlisted' | 'public_review';
+			}
+			
+			if (shareableLink) {
+				updatedConstitution.shareableLink = shareableLink;
+			}
+			
 			const newList = [...this.localConstitutions];
 			newList[index] = updatedConstitution;
 			this.localConstitutions = newList;
@@ -156,6 +194,56 @@ export class ConstitutionStore {
 		}
 		console.warn(`[ConstitutionStore] Attempted delete on non-existent local constitution: ${key}`);
 		return false;
+	}
+	
+	/** Generates a shareable link for unlisted constitutions */
+	async generateShareableLink(key: string): Promise<string> {
+		// This would ideally call an API to generate a secure, shortened link
+		// For now, we'll create a simple hash-based link
+		const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://creeds.world';
+		const shareId = btoa(`${key}-${Date.now()}`).replace(/=/g, '');
+		return `${baseUrl}/constitutions/share/${shareId}`;
+	}
+	
+	/** Track a new constitution submission */
+	trackSubmission(key: string): void {
+		this.submissionStatuses[key] = {
+			timestamp: new Date().toISOString(),
+			status: 'pending'
+		};
+		this.#saveSubmissionStatuses();
+		console.log(`[ConstitutionStore] Tracking new submission for: ${key}`);
+	}
+
+	/** Update submission status (for future use with polling or webhook) */
+	updateSubmissionStatus(key: string, status: 'pending' | 'approved' | 'rejected', message?: string): void {
+		if (this.submissionStatuses[key]) {
+			this.submissionStatuses[key] = {
+				...this.submissionStatuses[key],
+				status,
+				message
+			};
+			this.#saveSubmissionStatuses();
+			console.log(`[ConstitutionStore] Updated submission status for ${key} to ${status}`);
+		} else {
+			console.warn(`[ConstitutionStore] Attempted to update non-existent submission status: ${key}`);
+		}
+	}
+	
+	/** Get all submissions with their associated constitution metadata */
+	getSubmissionsWithMetadata(): Array<{
+		key: string;
+		constitution: LocalConstitutionMetadata | null;
+		status: {
+			timestamp: string;
+			status: 'pending' | 'approved' | 'rejected';
+			message?: string;
+		}
+	}> {
+		return Object.entries(this.submissionStatuses).map(([key, status]) => {
+			const constitution = this.localConstitutions.find(c => c.localStorageKey === key) || null;
+			return { key, constitution, status };
+		}).filter(entry => entry.constitution !== null);
 	}
 
 	// --- Derived State for UI Tree ---
@@ -185,7 +273,6 @@ export class ConstitutionStore {
 
 		// --- Transform Local Constitutions ---
 		const localFiles: UIFileNode[] = this.localConstitutions.map(meta => {
-			console.log("[ConstitutionStore] local constitution meta:", meta); 
 			return {
 				type: 'file',
 				metadata: meta,
@@ -213,8 +300,14 @@ export class ConstitutionStore {
 
 		// --- Combine and Return ---
 		const displayTree = [localFolder, ...globalNodes];
-		console.log("[ConstitutionStore] displayTree:", displayTree);
 		return displayTree;
+	}
+	
+	/** Get all unlisted constitutions with their shareable links */
+	get unlistedConstitutions(): Array<LocalConstitutionMetadata & { shareableLink: string }> {
+		return this.localConstitutions
+			.filter(c => c.privacyType === 'unlisted' && c.shareableLink)
+			.map(c => ({ ...c })) as Array<LocalConstitutionMetadata & { shareableLink: string }>;
 	}
 }
 

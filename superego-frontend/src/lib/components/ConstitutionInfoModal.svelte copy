@@ -1,0 +1,370 @@
+<script lang="ts">
+    import { onMount } from 'svelte';
+    import { constitutionStore } from '$lib/state/constitutions.svelte';
+    
+    // --- Props ---
+    let { constitutionId } = $props<{
+        constitutionId?: string; // Optional ID to focus on
+    }>();
+    
+    // --- Component State ---
+    let canvas: HTMLCanvasElement;
+    let context: CanvasRenderingContext2D | null;
+    let nodes: ConstitutionNode[] = $state([]);
+    let edges: ConstitutionEdge[] = $state([]);
+    let isDragging = $state(false);
+    let dragNode: ConstitutionNode | null = $state(null);
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let hoveredNode: ConstitutionNode | null = $state(null);
+    let selectedNode: ConstitutionNode | null = $state(null);
+    let zoom = $state(1);
+    
+    interface ConstitutionNode {
+        id: string;
+        title: string;
+        x: number;
+        y: number;
+        radius: number;
+        color: string;
+        type: 'local' | 'remote' | 'derived';
+        relations: string[]; // IDs of related constitutions
+    }
+    
+    interface ConstitutionEdge {
+        from: string;
+        to: string;
+        type: 'derives' | 'similar' | 'reference';
+    }
+    
+    // --- Helper Functions ---
+    function generateMockData() {
+        // In a real implementation, this would fetch actual relationship data
+        const mockNodes: ConstitutionNode[] = [
+            {
+                id: 'const-1',
+                title: 'Base Safety Guidelines',
+                x: 300,
+                y: 200,
+                radius: 40,
+                color: '#6366F1',
+                type: 'remote',
+                relations: ['const-2', 'const-3', 'const-4']
+            },
+            {
+                id: 'const-2',
+                title: 'Enhanced Safety Rules',
+                x: 500,
+                y: 150,
+                radius: 35,
+                color: '#8B5CF6',
+                type: 'remote',
+                relations: ['const-1', 'const-3']
+            },
+            {
+                id: 'const-3',
+                title: 'Creative Guidelines',
+                x: 400,
+                y: 350,
+                radius: 30,
+                color: '#EC4899',
+                type: 'remote',
+                relations: ['const-1', 'const-2']
+            },
+            {
+                id: 'const-4',
+                title: 'My Custom Constitution',
+                x: 150,
+                y: 300,
+                radius: 35,
+                color: '#10B981',
+                type: 'local',
+                relations: ['const-1']
+            }
+        ];
+        
+        const mockEdges: ConstitutionEdge[] = [
+            { from: 'const-1', to: 'const-2', type: 'derives' },
+            { from: 'const-1', to: 'const-3', type: 'similar' },
+            { from: 'const-1', to: 'const-4', type: 'derives' },
+            { from: 'const-2', to: 'const-3', type: 'reference' }
+        ];
+        
+        return { nodes: mockNodes, edges: mockEdges };
+    }
+    
+    function drawGraph() {
+        if (!context) return;
+        
+        // Clear canvas
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Apply zoom
+        context.save();
+        context.scale(zoom, zoom);
+        
+        // Draw edges
+        edges.forEach(edge => {
+            const fromNode = nodes.find(n => n.id === edge.from);
+            const toNode = nodes.find(n => n.id === edge.to);
+            
+            if (fromNode && toNode) {
+                context!.beginPath();
+                context!.moveTo(fromNode.x, fromNode.y);
+                context!.lineTo(toNode.x, toNode.y);
+                
+                // Edge styling based on type
+                switch (edge.type) {
+                    case 'derives':
+                        context!.strokeStyle = '#3B82F6';
+                        context!.lineWidth = 3;
+                        context!.setLineDash([]);
+                        break;
+                    case 'similar':
+                        context!.strokeStyle = '#10B981';
+                        context!.lineWidth = 2;
+                        context!.setLineDash([4, 4]);
+                        break;
+                    case 'reference':
+                        context!.strokeStyle = '#9CA3AF';
+                        context!.lineWidth = 1;
+                        context!.setLineDash([2, 2]);
+                        break;
+                }
+                
+                context!.stroke();
+            }
+        });
+        
+        // Draw nodes
+        nodes.forEach(node => {
+            context!.beginPath();
+            context!.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+            context!.fillStyle = node.color;
+            context!.fill();
+            
+            // Highlight for hovered or selected node
+            if (node === hoveredNode || node === selectedNode) {
+                context!.strokeStyle = '#FCD34D';
+                context!.lineWidth = 3;
+                context!.stroke();
+            }
+            
+            // Node type indicator
+            context!.fillStyle = 'white';
+            context!.textAlign = 'center';
+            context!.textBaseline = 'middle';
+            context!.font = 'bold 14px Arial';
+            context!.fillText(node.type.charAt(0).toUpperCase(), node.x, node.y);
+            
+            // Node title
+            context!.font = '12px Arial';
+            context!.fillText(node.title, node.x, node.y + node.radius + 15);
+        });
+        
+        // Restore context
+        context.restore();
+    }
+    
+    function handleMouseMove(event: MouseEvent) {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = (event.clientX - rect.left) / zoom;
+        const mouseY = (event.clientY - rect.top) / zoom;
+        
+        // Check if dragging a node
+        if (isDragging && dragNode) {
+            dragNode.x = mouseX + (dragNode.x - dragStartX);
+            dragNode.y = mouseY + (dragNode.y - dragStartY);
+            dragStartX = mouseX;
+            dragStartY = mouseY;
+            drawGraph();
+            return;
+        }
+        
+        // Check if hovering over a node
+        let foundNode = null;
+        for (const node of nodes) {
+            const dx = node.x - mouseX;
+            const dy = node.y - mouseY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance <= node.radius) {
+                foundNode = node;
+                break;
+            }
+        }
+        
+        if (foundNode !== hoveredNode) {
+            hoveredNode = foundNode;
+            canvas.style.cursor = hoveredNode ? 'pointer' : 'default';
+            drawGraph();
+        }
+    }
+    
+    function handleMouseDown(event: MouseEvent) {
+        if (hoveredNode) {
+            isDragging = true;
+            dragNode = hoveredNode;
+            
+            const rect = canvas.getBoundingClientRect();
+            dragStartX = (event.clientX - rect.left) / zoom;
+            dragStartY = (event.clientY - rect.top) / zoom;
+        }
+    }
+    
+    function handleMouseUp() {
+        isDragging = false;
+        dragNode = null;
+    }
+    
+    function handleClick() {
+        if (hoveredNode) {
+            selectedNode = hoveredNode;
+            drawGraph();
+            
+            // In a real implementation, you would show details or navigate to the selected constitution
+            console.log('Selected constitution:', selectedNode);
+        }
+    }
+    
+    function handleZoom(delta: number) {
+        zoom = Math.max(0.5, Math.min(2, zoom + delta * 0.1));
+        drawGraph();
+    }
+    
+    // --- Lifecycle ---
+    onMount(() => {
+        // Initialize canvas
+        const canvasElement = canvas as HTMLCanvasElement;
+        context = canvasElement.getContext('2d');
+        
+        // Set canvas size
+        canvasElement.width = canvasElement.offsetWidth;
+        canvasElement.height = canvasElement.offsetHeight;
+        
+        // Load data
+        const mockData = generateMockData();
+        nodes = mockData.nodes;
+        edges = mockData.edges;
+        
+        // Focus on specified constitution if provided
+        if (constitutionId) {
+            const focusNode = nodes.find(n => n.id === constitutionId);
+            if (focusNode) {
+                selectedNode = focusNode;
+            }
+        }
+        
+        // Initial draw
+        drawGraph();
+        
+        // Handle window resize
+        const handleResize = () => {
+            canvasElement.width = canvasElement.offsetWidth;
+            canvasElement.height = canvasElement.offsetHeight;
+            drawGraph();
+        };
+        
+        window.addEventListener('resize', handleResize);
+        
+        return () => {
+            window.removeEventListener('resize', handleResize);
+        };
+    });
+</script>
+
+<div class="graph-container">
+    <div class="controls">
+        <button onclick={() => handleZoom(1)} title="Zoom In">+</button>
+        <button onclick={() => handleZoom(-1)} title="Zoom Out">-</button>
+    </div>
+    
+    <canvas
+        bind:this={canvas}
+        onmousemove={handleMouseMove}
+        onmousedown={handleMouseDown}
+        onmouseup={handleMouseUp}
+        onclick={handleClick}
+    ></canvas>
+    
+    <div class="legend">
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: #3B82F6;"></div>
+            <span>Derived From</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: #10B981;"></div>
+            <span>Similar To</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background-color: #9CA3AF;"></div>
+            <span>References</span>
+        </div>
+    </div>
+</div>
+
+<style>
+    .graph-container {
+        width: 100%;
+        height: 400px;
+        position: relative;
+        border: 1px solid var(--input-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+    }
+    
+    canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background-color: var(--bg-surface);
+    }
+    
+    .controls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+    
+    .controls button {
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: var(--bg-surface);
+        border: 1px solid var(--input-border);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-size: 1.2rem;
+        padding: 0;
+    }
+    
+    .legend {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background-color: rgba(var(--bg-surface-rgb, 255, 255, 255), 0.8);
+        padding: 5px 10px;
+        border-radius: var(--radius-sm);
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.8rem;
+    }
+    
+    .legend-color {
+        width: 15px;
+        height: 2px;
+    }
+</style>

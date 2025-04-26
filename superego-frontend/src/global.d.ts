@@ -63,6 +63,8 @@ declare global {
         source: 'local';
         localStorageKey: string; // Unique key for localStorage
         text: string;
+        privacyType?: 'private' | 'unlisted' | 'public_review';
+        shareableLink?: string;
     }
 
     interface RemoteConstitutionMetadata extends BaseConstitutionMetadata {
@@ -208,6 +210,7 @@ declare global {
     interface ConstitutionSubmission {
         text: string;
         is_private: boolean;
+        is_unlisted?: boolean; // Added for unlisted constitutions
     }
 
     /** Response from submitting a new constitution */
@@ -215,10 +218,27 @@ declare global {
         status: string;
         message: string;
         email_sent: boolean;
+        shareableLink?: string; // Added for unlisted constitutions
     }
 
+    /** Structure for submission status display */
+    interface SubmissionStatus {
+        timestamp: string;
+        status: 'pending' | 'approved' | 'rejected';
+        message?: string;
+        reviewedAt?: string;
+        reviewerId?: string;
+    }
 
-
+    /** Structure for marketplace analytics */
+    interface ConstitutionAnalytics {
+        views: number;
+        downloads: number;
+        uses: number;
+        forks: number;
+        stars: number;
+        averageRating?: number;
+    }
 }
 
 export { };
