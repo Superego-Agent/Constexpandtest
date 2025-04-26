@@ -1,45 +1,30 @@
+/* src/lib/styles/dark-theme.css */
 :root[data-theme="dark"] {
-  /* Color Palette - subdued */
-  --primary: #9ca3af;
-  --primary-light: #d1d5db;
-  --primary-dark: #6b7280;
-  --secondary: #6b7280;
-  --secondary-light: #9ca3af;
-  --secondary-dark: #4b5563;
+  /* Dark mode color palette based on the screenshot */
+  --bg-primary: #0F1520;  /* Deep dark blue background */
+  --bg-surface: #14192B;  /* Slightly lighter for cards */
+  --bg-elevated: #192133; /* For hover states */
+  --bg-sidebar: #0D1119;  /* Even darker for sidebar */
   
-  --error: #ef4444;
-  --success: #10b981;
-  --warning: #f59e0b;
+  /* Text colors */
+  --text-primary: rgba(200, 215, 235, 0.95);  /* Light blue-gray for main text */
+  --text-secondary: rgba(150, 170, 200, 0.75);  /* Dimmer version for secondary text */
   
-  /* Background and surfaces - dark but not too dark */
-  --bg-primary: #1f2937;
-  --bg-surface: #1f2937;
-  --bg-elevated: #374151;
-  --bg-sidebar: #111827;
+  /* Accent colors */
+  --primary: #8892B0;  /* Medium blue-gray as primary accent */
+  --primary-light: #A6B1D0;  /* Lighter version */
   
-  /* Text */
-  --text-primary: rgba(255, 255, 255, 0.87);
-  --text-secondary: rgba(255, 255, 255, 0.6);
-  --text-disabled: rgba(255, 255, 255, 0.38);
+  /* Interface elements */
+  --card-bg: #14192B;  /* Slightly elevated from background */
+  --card-border: #1E2638;  /* Subtle border */
+  --card-hover: #1A2030;  /* Slightly lighter on hover */
   
-  /* Input fields */
-  --input-bg: #374151;
-  --input-border: #4b5563;
-  --input-focus: #9ca3af;
+  /* Make other variables consistent with this theme */
+  --input-bg: #192133;
+  --input-border: #263248;
   
-  /* Role-specific colors - subtle differences */
-  --human-bg: #374151;
-  --human-border: #4b5563;
-  --ai-bg: #1f2937;
-  --ai-border: #4b5563;
-  --system-bg: #111827;
-  --system-border: #4b5563;
-  --error-bg: #7f1d1d;
-  --error-border: #ef4444;
-  
-  /* Node colors - subdued */
-  --node-superego: #9ca3af;
-  --node-inner-agent: #9ca3af;
-  --node-tools: #6b7280;
-  --node-default: #4b5563;
+  /* Keep alert colors */
+  --error: #e53e3e;
+  --success: #38a169;
+  --warning: #e69819;
 }

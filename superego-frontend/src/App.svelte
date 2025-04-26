@@ -9,17 +9,21 @@
   import AdminReviewPanel from '$lib/state/adminreviewpanel.svelte';
   import MarketplaceBrowser from '$lib/state/marketplacebrowser.svelte';
   import SubmissionsPage from '$lib/state/submissionspage.svelte';
+  import ConstitutionsMenu from '$lib/components/ConstitutionsMenu.svelte';
+  import SimilarConstitutions from '$lib/components/SimilarConstitutions.svelte'; // New component
   import './lib/styles/theme.css';
   import './lib/styles/dark-theme.css';
 
   // Current route state for navigation
   let currentRoute = $state(window.location.pathname);
+  let showSidebar = $state(currentRoute !== '/'); // Hide sidebar on main menu
 
   onMount(async () => {
     try {
       // Configure route handling
       const handleRouteChange = () => {
         currentRoute = window.location.pathname;
+        showSidebar = currentRoute !== '/'; // Update sidebar visibility when route changes
       };
       
       window.addEventListener('popstate', handleRouteChange);
@@ -32,6 +36,7 @@
           const href = target.getAttribute('href') || '/';
           history.pushState(null, '', href);
           currentRoute = href;
+          showSidebar = href !== '/'; // Update sidebar visibility
         }
       });
 
@@ -61,43 +66,63 @@
 
   // Function to determine which component to show based on route
   function getRouteComponent() {
-    if (currentRoute.startsWith('/admin/review')) {
+    if (currentRoute === '/') {
+      return ConstitutionsMenu;
+    } else if (currentRoute.startsWith('/admin/review')) {
       return AdminReviewPanel;
     } else if (currentRoute.startsWith('/marketplace')) {
       return MarketplaceBrowser;
     } else if (currentRoute.startsWith('/submissions')) {
       return SubmissionsPage;
+    } else if (currentRoute.startsWith('/create')) {
+      return ChatInterface; // Assuming this is where we'd create constitutions
+    } else if (currentRoute.startsWith('/fork')) {
+      return MarketplaceBrowser; // Could be reused with a "fork mode" prop
+    } else if (currentRoute.startsWith('/similar')) {
+      return SimilarConstitutions; // New route for similar constitutions
     } else {
       return ChatInterface;
     }
   }
 </script>
 
-<main class="app-layout">
-  <div class="app-header">
-    <h1 class="app-title" onclick={() => { history.pushState(null, '', '/'); currentRoute = '/'; }}>
-      <span class="logo-text">Superego</span>
-      <span class="subtitle">Demo</span>
-    </h1>
-    <div class="navigation-indicator">
-      {#if currentRoute !== '/'}
-        <span class="current-route">{currentRoute.slice(1).charAt(0).toUpperCase() + currentRoute.slice(2)}</span>
-      {/if}
+<main class="app-layout" class:menu-active={currentRoute === '/'}>
+  {#if currentRoute !== '/'}
+    <!-- Only show header on non-menu pages -->
+    <div class="app-header">
+      <h1 class="app-title" onclick={() => { history.pushState(null, '', '/'); currentRoute = '/'; showSidebar = false; }}>
+        <span class="logo-text">Constitutions</span>
+        <span class="subtitle">MCP</span>
+      </h1>
+      <div class="navigation-indicator">
+        {#if currentRoute !== '/'}
+          <span class="current-route">{currentRoute.slice(1).charAt(0).toUpperCase() + currentRoute.slice(2)}</span>
+        {/if}
+      </div>
+      <div class="theme-toggle-container">
+        <ThemeToggle />
+      </div>
     </div>
-    <div class="theme-toggle-container">
-      <ThemeToggle />
-    </div>
-  </div>
-  <div class="app-content">
-    <Sidebar />
+  {/if}
+  
+  <div class="app-content" class:full-height={currentRoute === '/'}>
+    {#if showSidebar}
+      <Sidebar />
+    {/if}
     
     <!-- Dynamically render the appropriate component based on route -->
-    {#if currentRoute.startsWith('/admin/review')}
+    {#if currentRoute === '/'}
+      <ConstitutionsMenu />
+    {:else if currentRoute.startsWith('/admin/review')}
       <AdminReviewPanel />
     {:else if currentRoute.startsWith('/marketplace')}
       <MarketplaceBrowser />
     {:else if currentRoute.startsWith('/submissions')}
       <SubmissionsPage />
+    {:else if currentRoute.startsWith('/similar')}
+      <SimilarConstitutions />
+    {:else if currentRoute.startsWith('/create')}
+      <ChatInterface />
     {:else}
       <ChatInterface />
     {/if}
@@ -119,6 +144,10 @@
     background-color: var(--bg-primary);
   }
 
+  .app-layout.menu-active {
+    background-color: #0F1520; /* Deep dark blue for menu page */
+  }
+
   .app-header {
     display: flex;
     justify-content: space-between;
@@ -136,25 +165,29 @@
     overflow: hidden;
   }
 
+  .full-height {
+    height: 100vh;
+  }
+
   .app-title {
     margin: 0;
     display: flex;
-    align-items: center; /* Changed to horizontal alignment */
-    font-size: 1em; /* Make the entire title smaller */
-    cursor: pointer; /* Make it clear the logo is clickable */
+    align-items: center;
+    font-size: 1em;
+    cursor: pointer;
   }
 
   .logo-text {
-    background: linear-gradient(135deg, var(--primary-light), var(--secondary));
+    background: linear-gradient(135deg, var(--primary-light), var(--secondary, var(--primary-light)));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-    font-size: 1em; /* Reduced from 1.4em */
+    font-size: 1em;
     font-weight: bold;
   }
 
   .subtitle {
-    margin-left: 8px; /* Add space between Superego and Demo */
+    margin-left: 8px;
     font-size: 0.9em;
     color: var(--text-secondary);
     font-weight: normal;
@@ -185,6 +218,17 @@
     touch-action: manipulation;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Additional global styles */
+  :global(body[data-theme="dark"]) {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  /* Force dark theme in global styles */
+  :global(:root) {
+    color-scheme: dark; /* Prefer dark theme for browser elements */
   }
 
   :global(*, *::before, *::after) {

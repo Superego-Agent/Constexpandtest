@@ -67,3 +67,16 @@ button:focus-visible {
 
 /* Removed prefers-color-scheme media query as theme is handled by data-theme attribute */
 
+/* Add to src/app.css */
+
+/* Additional global styles */
+body[data-theme="dark"] {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Force dark theme in app.css if needed */
+:root {
+  color-scheme: dark; /* Prefer dark theme for browser elements */
+}
+
