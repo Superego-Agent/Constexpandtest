@@ -240,3 +240,88 @@ export const getLatestHistory = (threadId: string, signal?: AbortSignal): Promis
 		apiFetch<HistoryEntry>(`${BASE_URL}/threads/${threadId}/latest`, {}, signal)
 	);
 };
+
+
+/**
+ * Fetches constitutions pending review for the admin panel.
+ */
+export const fetchPendingReviews = (signal?: AbortSignal): Promise<any[]> => {
+    return logExecution('Fetch pending constitution reviews', () =>
+        apiFetch<any[]>(`${BASE_URL}/admin/reviews/pending`, {}, signal)
+    );
+};
+
+/**
+ * Fetches detailed information about a specific submission.
+ */
+export const fetchSubmissionDetails = (
+    submissionId: string,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Fetch details for submission ${submissionId}`, () =>
+        apiFetch<any>(`${BASE_URL}/admin/reviews/submissions/${submissionId}`, {}, signal)
+    );
+};
+
+/**
+ * Runs superego check on a constitution submission.
+ */
+export const runSuperEgoCheck = (
+    submissionId: string,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Run superego check for submission ${submissionId}`, () =>
+        apiFetch<any>(
+            `${BASE_URL}/admin/reviews/submissions/${submissionId}/check`,
+            { method: 'POST' },
+            signal
+        )
+    );
+};
+
+/**
+ * Approves a constitution submission.
+ */
+export const approveSubmission = (
+    submissionId: string,
+    reviewData: {
+        comment?: string;
+        tags?: string[];
+        isWhitelisted?: boolean;
+    },
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Approve submission ${submissionId}`, () =>
+        apiFetch<any>(
+            `${BASE_URL}/admin/reviews/submissions/${submissionId}/approve`,
+            {
+                method: 'POST',
+                body: JSON.stringify(reviewData)
+            },
+            signal
+        )
+    );
+};
+
+/**
+ * Rejects a constitution submission.
+ */
+export const rejectSubmission = (
+    submissionId: string,
+    reviewData: {
+        comment: string;
+        reason: 'inappropriate' | 'low_quality' | 'duplicate' | 'other';
+    },
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Reject submission ${submissionId}`, () =>
+        apiFetch<any>(
+            `${BASE_URL}/admin/reviews/submissions/${submissionId}/reject`,
+            {
+                method: 'POST',
+                body: JSON.stringify(reviewData)
+            },
+            signal
+        )
+    );
+};
