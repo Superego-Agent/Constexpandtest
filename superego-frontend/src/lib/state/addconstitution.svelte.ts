@@ -1,44 +1,64 @@
+<!-- src/lib/components/AddConstitution.svelte -->
 <script lang="ts">
     import { fetchConstitutionContent, submitConstitution } from '$lib/api/rest.svelte';
-    import { constitutionStore } from '$lib/state/constitutions.svelte'; // Updated import
-    import { tick } from 'svelte';
+    import { constitutionStore } from '$lib/state/constitutions.svelte';
     import ConstitutionTestingEnvironment from './ConstitutionTestingEnvironment.svelte';
+    import { tick } from 'svelte';
+    import IconInfoCircle from '~icons/fluent/info-24-regular';
+    import IconTestBeaker from '~icons/fluent/beaker-24-regular';
+    import { validateConstitutionFormat } from '$lib/utils/constitutionValidator';
 
     let { onConstitutionAdded = (detail?: { success: boolean }) => {}, onClose = () => {} } = $props<{
         onConstitutionAdded?: (detail?: { success: boolean }) => void;
         onClose?: () => void;
     }>();
 
-    // Use the single store instance for global state
+    // State for the form
+    let constitutionTitle = $state('');
+    let constitutionText = $state('');
+    let submitForReview = $state(false);
+    let isUnlisted = $state(false);
+    let selectedTemplateId: string | null = $state(null);
+    let showTestingEnvironment = $state(false);
+    let formatValidationErrors = $state<string[]>([]);
+    let showGuidelines = $state(false);
+
+    // Submission & Loading State
+    let isSubmitting = $state(false);
+    let isValidating = $state(false);
+    let submitStatus: { success?: boolean; message?: string; shareableLink?: string } | null = $state(null);
+    let templateLoading = $state(false);
+
+    // Access global state
     let availableConstitutions = $derived(constitutionStore.globalHierarchy);
     let isLoading = $derived(constitutionStore.isLoadingGlobal);
     let error = $derived(constitutionStore.globalError);
 
-    // --- Component State ---
-    let constitutionTitle = $state('');
-    let constitutionText = $state('');
-    let submitForReview = $state(false); // For public submission
-    let isUnlisted = $state(false); // New state for unlisted privacy option
-    let selectedTemplateId: string | null = $state(null);
-    let showTestingEnvironment = $state(false);
+    // Get all templates (both remote and local)
+    let allConstitutionsForTemplate = $derived((() => {
+        const remoteConstitutions = flattenHierarchy(constitutionStore.globalHierarchy);
+        const remoteOptions = remoteConstitutions.map((c) => ({ 
+            type: 'remote' as const, 
+            id: c.relativePath, 
+            title: c.title 
+        }));
 
-    // Submission & Loading State
-    let isSubmitting = $state(false);
-    let submitStatus: { success?: boolean; message?: string; shareableLink?: string } | null = $state(null);
-    let templateLoading = $state(false);
+        const localOptions = constitutionStore.localConstitutions.map((c) => ({ 
+            type: 'local' as const, 
+            id: c.localStorageKey, 
+            title: c.title, 
+            text: c.text 
+        }));
 
-    // --- Template Handling ---
-    // Combine global and local for template dropdown
-    type TemplateOption =
-        | { type: 'remote'; id: string; title: string } // 'id' will be relativePath
-        | { type: 'local'; id: string; title: string; text: string }; // 'id' will be localStorageKey
+        return [...remoteOptions, ...localOptions].sort((a, b) => a.title.localeCompare(b.title));
+    })());
 
-    // --- Functions ---
+    // Helper function to flatten the hierarchy
     function flattenHierarchy(hierarchy: ConstitutionHierarchy | null): RemoteConstitutionMetadata[] {
-        if (!hierarchy) {
-            return [];
-        }
+        if (!hierarchy) return [];
+        
         const constitutions: RemoteConstitutionMetadata[] = [...hierarchy.rootConstitutions];
+        
         function recurseFolders(folders: ConstitutionFolder[]) {
             for (const folder of folders) {
                 constitutions.push(...folder.constitutions);
@@ -47,23 +67,30 @@
                 }
             }
         }
+        
         recurseFolders(hierarchy.rootFolders);
         return constitutions;
     }
+
+    // Load template content when template selection changes
+    $effect(() => {
+        if (selectedTemplateId) {
+            loadTemplateContent(selectedTemplateId);
+        }
+    });
 
     async function loadTemplateContent(templateId: string) {
         const selectedTemplate = allConstitutionsForTemplate.find(t => t.id === templateId);
         if (!selectedTemplate) return;
 
-        constitutionTitle = selectedTemplate.title; // Pre-fill title
+        constitutionTitle = selectedTemplate.title;
         templateLoading = true;
         constitutionText = 'Loading template content...';
 
         try {
             if (selectedTemplate.type === 'local') {
                 constitutionText = selectedTemplate.text;
-            } else { // type === 'remote'
-                // Fetch content for remote constitutions using relativePath (stored in id)
+            } else {
                 constitutionText = await fetchConstitutionContent(selectedTemplate.id);
             }
         } catch (error) {
@@ -71,13 +98,35 @@
             constitutionText = `Error loading template: ${error instanceof Error ? error.message : String(error)}`;
         } finally {
             templateLoading = false;
-            // Ensure textarea updates visually if needed
             await tick();
+        }
+    }
+
+    async function validateFormat() {
+        isValidating = true;
+        formatValidationErrors = [];
+        
+        try {
+            const result = await validateConstitutionFormat(constitutionText);
+            formatValidationErrors = result.errors;
+            return result.isValid;
+        } catch (error) {
+            console.error("Validation error:", error);
+            formatValidationErrors = ["An error occurred during validation."];
+            return false;
+        } finally {
+            isValidating = false;
         }
     }
 
     async function handleSubmit() {
         if (!constitutionTitle.trim() || !constitutionText.trim()) return;
+        
+        // Validate format first
+        const isFormatValid = await validateFormat();
+        if (!isFormatValid) {
+            return; // Stop submission if format is invalid
+        }
 
         isSubmitting = true;
         submitStatus = null;
@@ -89,9 +138,11 @@
 
         try {
             // Determine privacy type
-            const privacyType = submitForReview ? 'public_review' : (isUnlisted ? 'unlisted' : 'private');
+            const privacyType = submitForReview 
+                ? 'public_review' 
+                : (isUnlisted ? 'unlisted' : 'private');
             
-            // Add constitution locally first
+            // Add constitution locally
             newConstitution = constitutionStore.addItem(constitutionTitle, constitutionText, privacyType);
             localAddSuccess = true;
 
@@ -99,7 +150,7 @@
                 // Submit for review if public option is selected
                 const response = await submitConstitution({
                     text: constitutionText,
-                    is_private: false, // Submit for review implies potential public use
+                    is_private: false,
                     is_unlisted: false
                 });
                 submitApiSuccess = response.status === 'success';
@@ -128,7 +179,7 @@
             if (localAddSuccess) {
                 submitStatus = {
                     success: true,
-                    message: `Constitution '${constitutionTitle}' saved locally.` + 
+                    message: `Constitution '${constitutionTitle}' saved successfully.` + 
                              (submitForReview ? ` ${submitApiMessage}` : '') +
                              (isUnlisted ? ` ${submitApiMessage}` : ''),
                     shareableLink: shareableLink
@@ -142,15 +193,11 @@
 
                 // Delay closing only if not unlisted (so user can copy the link)
                 if (!isUnlisted) {
-                    setTimeout(() => {
-                        onClose();
-                    }, 2500);
+                    setTimeout(() => onClose(), 2500);
                 }
             } else {
-                // This case should ideally not happen if addItem doesn't throw
                 submitStatus = { success: false, message: 'Failed to save constitution locally.' };
             }
-
         } catch (error) {
             console.error('Error during constitution save/submit:', error);
             submitStatus = {
@@ -169,33 +216,20 @@
         }
         showTestingEnvironment = true;
     }
-    
-    let allConstitutionsForTemplate = $derived((() => {
-        const remoteConstitutions = flattenHierarchy(constitutionStore.globalHierarchy);
-        const remoteOptions: TemplateOption[] = remoteConstitutions
-            .map((c): TemplateOption => ({ type: 'remote', id: c.relativePath, title: c.title }));
-
-        const localOptions: TemplateOption[] = constitutionStore.localConstitutions.map((c: LocalConstitutionMetadata): TemplateOption => 
-            ({ type: 'local', id: c.localStorageKey, title: c.title, text: c.text }));
-
-        return [...remoteOptions, ...localOptions].sort((a, b) => a.title.localeCompare(b.title));
-    })());
-    
-    // --- Reactive Logic & Effects ---
-    $effect(() => {
-        if (selectedTemplateId) {
-            loadTemplateContent(selectedTemplateId);
-        }
-    });
 </script>
 
 <div class="add-constitution">
     <h2>Add New Constitution</h2>
+    
     <div class="form-group">
-        <!-- === Template Selection === -->
+        <!-- Template Selection -->
         <div class="form-row">
             <label for="template-select">Use as Template (Optional):</label>
-            <select id="template-select" bind:value={selectedTemplateId} disabled={isSubmitting || templateLoading}>
+            <select 
+                id="template-select" 
+                bind:value={selectedTemplateId} 
+                disabled={isSubmitting || templateLoading}
+            >
                 <option value={null}>-- Select Template --</option>
                 {#each allConstitutionsForTemplate as template (template.id)}
                     <option value={template.id}>
@@ -205,7 +239,7 @@
             </select>
         </div>
 
-        <!-- === Constitution Title === -->
+        <!-- Constitution Title -->
         <div class="form-row">
             <label for="constitution-title">Title:</label>
             <input
@@ -218,16 +252,69 @@
             />
         </div>
 
-        <!-- === Constitution Text === -->
+        <!-- Format Guidelines Button -->
+        <div class="guidelines-toggle">
+            <button 
+                type="button" 
+                class="guidelines-button" 
+                onclick={() => showGuidelines = !showGuidelines}
+            >
+                <IconInfoCircle /> {showGuidelines ? 'Hide' : 'Show'} Format Guidelines
+            </button>
+        </div>
+
+        <!-- Format Guidelines Panel -->
+        {#if showGuidelines}
+            <div class="guidelines-panel">
+                <h3>Constitution Format Guidelines</h3>
+                <p>For best results, your constitution should follow these guidelines:</p>
+                <ul>
+                    <li><strong>Clear Structure:</strong> Use headings (# for main, ## for sub-sections) to organize content</li>
+                    <li><strong>Core Principles:</strong> Start with high-level principles</li>
+                    <li><strong>Specific Rules:</strong> Include specific instructions or prohibitions</li>
+                    <li><strong>Markdown Format:</strong> Use markdown for formatting (bold, lists, etc.)</li>
+                    <li><strong>Reasonable Length:</strong> Keep it concise but comprehensive (500-5000 characters recommended)</li>
+                </ul>
+                <p>Example structure:</p>
+                <pre>
+# Constitution Title
+
+## Core Principles
+1. First principle
+2. Second principle
+
+## Specific Guidelines
+* Important guideline
+* Another key rule
+
+## Exceptions
+Circumstances where rules may be relaxed...
+</pre>
+            </div>
+        {/if}
+
+        <!-- Constitution Text -->
         <textarea
             bind:value={constitutionText}
             placeholder="Enter your constitution text here..."
-            rows="10"
+            rows="12"
             required
             disabled={isSubmitting || templateLoading}
         ></textarea>
 
-        <!-- === Privacy Settings Section === -->
+        <!-- Validation Errors -->
+        {#if formatValidationErrors.length > 0}
+            <div class="validation-errors">
+                <h4>Format Issues:</h4>
+                <ul>
+                    {#each formatValidationErrors as error}
+                        <li>{error}</li>
+                    {/each}
+                </ul>
+            </div>
+        {/if}
+
+        <!-- Privacy Settings Section -->
         <div class="privacy-section">
             <h3 class="section-title">Privacy Settings</h3>
             
@@ -293,7 +380,7 @@
             </div>
         {/if}
 
-        <!-- === Status Message === -->
+        <!-- Status Message -->
         {#if submitStatus}
             <div class="status-message {submitStatus.success ? 'success' : 'error'}">
                 <div class="status-header">
@@ -336,20 +423,31 @@
             </div>
         {/if}
 
-        <!-- === Button Container === -->
+        <!-- Button Container -->
         <div class="button-container">
             <button
+                type="button"
                 class="test-button"
                 onclick={openTestingEnvironment}
                 disabled={!constitutionText.trim() || isSubmitting || templateLoading}
             >
-                Test Constitution
+                <IconTestBeaker /> Test Constitution
             </button>
             
             <button
+                type="button"
+                class="validate-button"
+                onclick={validateFormat}
+                disabled={!constitutionText.trim() || isSubmitting || templateLoading || isValidating}
+            >
+                {isValidating ? 'Validating...' : 'Validate Format'}
+            </button>
+            
+            <button
+                type="button"
                 class="submit-button"
                 onclick={handleSubmit}
-                disabled={!constitutionTitle.trim() || !constitutionText.trim() || isSubmitting || templateLoading}
+                disabled={!constitutionTitle.trim() || !constitutionText.trim() || isSubmitting || templateLoading || isValidating}
             >
                 {#if isSubmitting}
                     Saving...
@@ -415,14 +513,15 @@
         padding: 10px 12px;
         border: 1px solid var(--input-border);
         border-radius: var(--radius-sm);
-        background: var(--bg-surface); // Use surface for inputs
+        background: var(--bg-surface);
         color: var(--text-primary);
         font-family: inherit;
         font-size: 0.95em;
     }
-     input[type="text"]:focus,
-     select:focus,
-     textarea:focus {
+
+    input[type="text"]:focus,
+    select:focus,
+    textarea:focus {
         outline: none;
         border-color: var(--primary);
         box-shadow: 0 0 0 2px var(--primary-lightest);
@@ -430,11 +529,84 @@
 
     textarea {
         resize: vertical;
-        min-height: 150px; // Adjust height
+        min-height: 150px;
+        font-family: 'Courier New', monospace;
     }
 
     select {
         cursor: pointer;
+    }
+
+    .guidelines-toggle {
+        display: flex;
+        justify-content: flex-start;
+    }
+
+    .guidelines-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: none;
+        border: none;
+        color: var(--primary);
+        font-size: 0.9em;
+        cursor: pointer;
+        padding: 0;
+    }
+
+    .guidelines-panel {
+        background-color: var(--bg-hover);
+        border: 1px solid var(--input-border);
+        border-radius: var(--radius-md);
+        padding: 16px;
+        font-size: 0.9em;
+
+        h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        p {
+            margin-bottom: 10px;
+        }
+
+        ul {
+            margin-left: 20px;
+            margin-bottom: 10px;
+        }
+
+        pre {
+            background-color: var(--bg-elevated);
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+    }
+
+    .validation-errors {
+        background-color: var(--error-bg);
+        border: 1px solid var(--error-border);
+        border-radius: var(--radius-sm);
+        padding: 12px;
+        font-size: 0.9em;
+
+        h4 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            color: var(--error);
+        }
+
+        ul {
+            margin-left: 20px;
+            margin-bottom: 0;
+        }
+
+        li {
+            color: var(--error);
+        }
     }
 
     .privacy-section {
@@ -510,10 +682,11 @@
         display: flex;
         gap: var(--space-md);
         margin-top: 8px;
+        flex-wrap: wrap;
     }
-    
-    .test-button {
-        padding: 10px 20px;
+
+    .test-button, .validate-button {
+        padding: 10px 15px;
         background-color: var(--secondary);
         color: white;
         border: none;
@@ -521,19 +694,21 @@
         cursor: pointer;
         font-size: 0.95em;
         transition: background-color 0.2s, opacity 0.2s;
-    }
-    
-    .test-button:hover:not(:disabled) {
-        background-color: var(--secondary-light);
-    }
-    
-    .test-button:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        
+        &:hover:not(:disabled) {
+            background-color: var(--secondary-light);
+        }
+        
+        &:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     }
 
     .submit-button {
-        align-self: flex-start;
         padding: 10px 20px;
         background-color: var(--primary);
         color: white;
@@ -542,21 +717,16 @@
         cursor: pointer;
         font-size: 0.95em;
         transition: background-color 0.2s, opacity 0.2s;
-        margin-top: 0; // Remove margin since we use flex gap in button container
-    }
-
-    .submit-button:hover:not(:disabled) {
-        background-color: var(--primary-light);
-    }
-
-    .submit-button:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-
-    .review-note {
-        font-size: 0.85em;
-        color: var(--text-secondary);
+        margin-left: auto;
+        
+        &:hover:not(:disabled) {
+            background-color: var(--primary-light);
+        }
+        
+        &:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     }
 
     .status-message {
