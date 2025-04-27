@@ -325,3 +325,72 @@ export const rejectSubmission = (
         )
     );
 };
+
+/**
+ * Fetches relationship data for a specific constitution.
+ */
+export const fetchConstitutionRelationships = (
+    constitutionId: string,
+    signal?: AbortSignal
+): Promise<any> => {
+    return logExecution(`Fetch relationships for constitution ${constitutionId}`, () =>
+        apiFetch<any>(
+            `${BASE_URL}/constitutions/${constitutionId}/relationships`,
+            {},
+            signal
+        )
+    );
+};
+
+
+// Add to src/lib/api/rest.svelte.ts
+
+/**
+ * Fetches constitutions similar to the provided text.
+ */
+export const fetchSimilarConstitutions = (
+    text: string,
+    signal?: AbortSignal
+): Promise<any[]> => {
+    return logExecution('Fetch similar constitutions', () =>
+        apiFetch<any[]>(
+            `${BASE_URL}/constitutions/similar`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ text })
+            },
+            signal
+        )
+    );
+};
+
+/**
+ * Fetches constitutions similar to the one with the provided ID.
+ */
+export const fetchSimilarConstitutionsById = (
+    id: string,
+    signal?: AbortSignal
+): Promise<any[]> => {
+    return logExecution(`Fetch similar constitutions for ID ${id}`, () =>
+        apiFetch<any[]>(
+            `${BASE_URL}/constitutions/${id}/similar`,
+            {},
+            signal
+        )
+    );
+};
+
+/**
+ * Fetches all available tags with their counts.
+ */
+export const fetchTags = (
+    signal?: AbortSignal
+): Promise<{tag: string, count: number}[]> => {
+    return logExecution('Fetch available tags', () =>
+        apiFetch<{tag: string, count: number}[]>(
+            `${BASE_URL}/tags`,
+            {},
+            signal
+        )
+    );
+};

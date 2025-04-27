@@ -667,3 +667,181 @@ async def whitelist_for_mcp(submission_id: str, text: str):
     # Simulate whitelisting
     print(f"Whitelisting constitution {submission_id} for MCP servers")
     # In a real implementation, this would interact with the MCP system
+
+
+# Add to api_routers/constitutions.py
+
+@router.get("/api/constitutions/{constitution_id}/relationships")
+async def get_constitution_relationships_endpoint(
+    constitution_id: str = FastApiPath(..., title="The constitution ID to get relationships for"),
+):
+    """Returns relationships between this constitution and others."""
+    try:
+        # This would connect to a database to fetch real relationship data
+        # For now, we'll generate mock data
+        
+        relationships = {
+            "nodes": [
+                {"id": constitution_id, "title": "Selected Constitution", "type": "focus"},
+                # Additional nodes would be pulled from database in real implementation
+            ],
+            "links": [
+                # Links would be pulled from database in real implementation
+            ]
+        }
+        
+        # Generate some mock nodes and links
+        for i in range(1, 4):
+            derived_id = f"derived-{i}"
+            relationships["nodes"].append({
+                "id": derived_id,
+                "title": f"Derived Constitution {i}",
+                "type": "derived",
+                "description": "Based on the selected constitution"
+            })
+            relationships["links"].append({
+                "source": constitution_id,
+                "target": derived_id,
+                "type": "derives",
+                "strength": 0.8 - (i * 0.1)
+            })
+        
+        for i in range(1, 3):
+            original_id = f"original-{i}"
+            relationships["nodes"].append({
+                "id": original_id,
+                "title": f"Original Constitution {i}",
+                "type": "original",
+                "description": "A foundation for the selected constitution"
+            })
+            relationships["links"].append({
+                "source": original_id,
+                "target": constitution_id,
+                "type": "derives",
+                "strength": 0.7
+            })
+        
+        for i in range(1, 6):
+            similar_id = f"similar-{i}"
+            relationships["nodes"].append({
+                "id": similar_id,
+                "title": f"Similar Constitution {i}",
+                "type": "similar",
+                "description": "Contains similar concepts"
+            })
+            relationships["links"].append({
+                "source": constitution_id,
+                "target": similar_id,
+                "type": "similar",
+                "strength": 0.9 - (i * 0.15)
+            })
+        
+        return relationships
+        
+    except Exception as e:
+        logging.error(f"Error getting relationships for constitution {constitution_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch constitution relationships.")
+
+
+# Add to api_routers/constitutions.py
+
+@router.get("/api/tags")
+async def get_tags_endpoint():
+    """Returns all tags with their usage count."""
+    try:
+        # In a real implementation, this would query the database
+        # For now, generate mock data
+        tags = [
+            {"tag": "safety", "count": 28},
+            {"tag": "ethics", "count": 22},
+            {"tag": "creativity", "count": 15},
+            {"tag": "guidelines", "count": 42},
+            {"tag": "corporate", "count": 8},
+            {"tag": "governance", "count": 12},
+            {"tag": "assistance", "count": 18},
+            {"tag": "education", "count": 7},
+            {"tag": "healthcare", "count": 5},
+            {"tag": "legal", "count": 9},
+            {"tag": "finance", "count": 6},
+            {"tag": "technical", "count": 11},
+            {"tag": "research", "count": 14},
+        ]
+        return tags
+    except Exception as e:
+        logging.error(f"Error getting tags: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tags.")
+
+@router.post("/api/constitutions/similar")
+async def get_similar_constitutions_endpoint(
+    text: str = Body(..., embed=True)
+):
+    """Returns constitutions that are semantically similar to the provided text."""
+    try:
+        # This would use an embeddings model in the real implementation
+        # For now, generate mock data
+        
+        similarity_scale = [0.98, 0.87, 0.76, 0.68, 0.62, 0.59, 0.52, 0.48]
+        similar_constitutions = []
+        
+        for i, similarity in enumerate(similarity_scale):
+            similar_constitutions.append({
+                "id": f"similar-{i+1}",
+                "title": f"Similar Constitution {i+1}",
+                "similarity": similarity,
+                "author": f"Author {i+1}",
+                "description": f"A constitution with {round(similarity * 100)}% semantic similarity to the input text.",
+                "excerpt": "This is an excerpt that would show matched context...",
+                "tags": ["safety", "ethics"] if i % 2 == 0 else ["corporate", "governance"],
+                "source": "marketplace",
+                "isStarred": i == 1  # Example: one constitution is already starred
+            })
+        
+        # Add some local constitutions for demonstration
+        similar_constitutions.append({
+            "id": "local-1",
+            "title": "My Similar Constitution",
+            "similarity": 0.82,
+            "author": "You",
+            "description": "One of your constitutions that is semantically similar",
+            "tags": ["personal", "draft"],
+            "source": "local"
+        })
+        
+        return similar_constitutions
+    except Exception as e:
+        logging.error(f"Error finding similar constitutions: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
+
+@router.get("/api/constitutions/{constitution_id}/similar")
+async def get_similar_constitutions_by_id_endpoint(
+    constitution_id: str = FastApiPath(..., title="The constitution ID to find similar constitutions for")
+):
+    """Returns constitutions that are semantically similar to the specified constitution."""
+    try:
+        # This would fetch the specified constitution and then use its text for comparison
+        # For now, generate mock data
+        
+        similarity_scale = [0.95, 0.89, 0.78, 0.72, 0.65, 0.57, 0.51]
+        similar_constitutions = []
+        
+        for i, similarity in enumerate(similarity_scale):
+            similar_constitutions.append({
+                "id": f"similar-{i+1}",
+                "title": f"Similar to {constitution_id} - Constitution {i+1}",
+                "similarity": similarity,
+                "author": f"Author {i+1}",
+                "description": f"A constitution with {round(similarity * 100)}% semantic similarity to {constitution_id}.",
+                "excerpt": "This is an excerpt that would show matched context...",
+                "tags": ["safety", "ethics"] if i % 2 == 0 else ["corporate", "governance"],
+                "source": "marketplace",
+                "isStarred": i == 2  # Example: one constitution is already starred
+            })
+            
+        return similar_constitutions
+    except Exception as e:
+        logging.error(f"Error finding similar constitutions for {constitution_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")

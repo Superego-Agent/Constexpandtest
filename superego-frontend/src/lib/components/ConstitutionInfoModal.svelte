@@ -168,3 +168,108 @@
             color: var(--error);
         }
     </style>
+
+
+<!-- Update src/lib/components/ConstitutionInfoModal.svelte -->
+<script lang="ts">
+    // Add import
+    import ConstitutionRelationshipGraph from './ConstitutionRelationshipGraph.svelte';
+    
+    // Add to existing props
+    const { 
+        title = 'Constitution Info',
+        description = undefined,
+        content = undefined,
+        isLoading = false,
+        error = null,
+        onClose = () => {},
+        constitutionId = undefined // Add this prop
+    } = $props();
+    
+    // Add state for active tab
+    let activeTab = $state<'content' | 'relationships'>('content');
+</script>
+
+<div class="modal-overlay">
+    <div class="modal-content">
+        <button class="close-button" onclick={onClose}>×</button>
+        <h2>{title}</h2>
+        {#if description}
+            <p class="description">{description}</p>
+        {/if}
+        
+        <!-- Add tabs if we have a constitution ID -->
+        {#if constitutionId}
+            <div class="tabs">
+                <button 
+                    class="tab" 
+                    class:active={activeTab === 'content'} 
+                    onclick={() => activeTab = 'content'}
+                >
+                    Content
+                </button>
+                <button 
+                    class="tab" 
+                    class:active={activeTab === 'relationships'} 
+                    onclick={() => activeTab = 'relationships'}
+                >
+                    Relationships
+                </button>
+            </div>
+        {/if}
+        
+        <!-- Tab content -->
+        {#if !constitutionId || activeTab === 'content'}
+            <!-- Original content display code -->
+            {#if isLoading}
+                <div class="loading-indicator">Loading content...</div>
+            {:else if error}
+                <div class="error-message">Error: {error}</div>
+            {:else if content}
+                <div class="content-area">{@html parsedHtml}</div>
+            {:else}
+                <p>No content available.</p>
+            {/if}
+        {:else if activeTab === 'relationships'}
+            <div class="relationships-container">
+                <ConstitutionRelationshipGraph 
+                    constitutionId={constitutionId}
+                    width={700} 
+                    height={400}
+                />
+            </div>
+        {/if}
+    </div>
+</div>
+
+<style lang="scss">
+    /* Add to existing styles */
+    .tabs {
+        display: flex;
+        border-bottom: 1px solid var(--input-border);
+        margin-top: var(--space-md);
+        margin-bottom: var(--space-md);
+    }
+
+    .tab {
+        padding: var(--space-sm) var(--space-md);
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        
+        &.active {
+            border-bottom-color: var(--primary);
+            color: var(--primary);
+        }
+        
+        &:hover:not(.active) {
+            background-color: var(--bg-hover);
+        }
+    }
+
+    .relationships-container {
+        height: 400px;
+        margin-top: var(--space-md);
+    }
+</style>
