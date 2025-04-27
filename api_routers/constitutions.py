@@ -6,10 +6,11 @@ import asyncio
 import uuid
 import hashlib
 import base64
+import os
 from datetime import datetime
 from enum import Enum
-from typing import List, Dict, Optional
-from fastapi import APIRouter, HTTPException, Path as FastApiPath, Body, Query, BackgroundTasks, Depends
+from typing import List, Dict, Optional, Any
+from fastapi import APIRouter, HTTPException, Path as FastApiPath, Body, Query, BackgroundTasks, Depends, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, EmailStr
 
@@ -17,11 +18,17 @@ from pydantic import BaseModel, Field, EmailStr
 from backend_models import ConstitutionHierarchy
 from db.constitution_db import (
     store_submission, update_submission, get_submission_by_id, 
-    get_all_pending_reviews, store_shareable_link
+    get_all_pending_reviews, store_shareable_link, update_mcp_status,
+    get_all_whitelisted_constitutions, store_constitution_embedding,
+    find_similar_constitutions
 )
 from services.superego import SuperegoService
 from services.email_service import EmailService
+from services.embedding_service import EmbeddingService
+from services.mcp_service import MCPService
 from auth.auth import get_admin_user, User
+from middleware.bot_detection import BotDetection
+from middleware.ip_throttling import IPThrottler
 
 try:
     from constitution_utils import get_constitution_hierarchy, get_constitution_content
@@ -34,6 +41,17 @@ router = APIRouter()
 
 # Initialize services
 superego_service = SuperegoService()
+embedding_service = EmbeddingService()
+
+# Initialize MCP service
+mcp_service = MCPService(
+    mcp_registry_url=os.getenv("MCP_REGISTRY_URL", "https://registry.mcp.so"),
+    api_key=os.getenv("MCP_API_KEY")
+)
+
+# Initialize protection services
+ip_throttler = IPThrottler()
+bot_detection = BotDetection()
 
 # Initialize email service (should be done at app startup with config values)
 email_service = EmailService(
@@ -44,6 +62,18 @@ email_service = EmailService(
     from_email="notifications@creeds.world",  # Replace with actual email
     use_tls=True
 )
+
+async def analytics_protection(request: Request):
+    """Dependency for analytics endpoints to prevent gaming."""
+    # Check if bot
+    if not await bot_detection.check_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Request identified as automated. Analytics actions blocked."
+        )
+    
+    # Continue with request
+    return request
 
 @router.get("/api/constitutions", response_model=ConstitutionHierarchy)
 async def get_constitutions_endpoint():
@@ -162,6 +192,13 @@ async def submit_constitution(
         
         # Store in database
         await store_submission(review_submission)
+        
+        # Generate embedding for similarity search
+        background_tasks.add_task(
+            generate_and_store_embedding,
+            submission_id=submission_id,
+            text=submission.text
+        )
         
         # Generate shareable link for unlisted constitutions
         shareable_link = None
@@ -475,65 +512,166 @@ async def request_submission_changes(
     
     return {"status": "success", "message": "Changes requested."}
 
-# --- Helper Functions ---
-
-async def send_submission_notification(
-    email: EmailStr, 
-    submission_id: str, 
-    status: ReviewStatus,
-    message: str
+# --- MCP Integration Endpoints ---
+@router.get("/admin/mcp/status/{constitution_id}")
+async def get_mcp_status_endpoint(
+    constitution_id: str,
+    current_user: User = Depends(get_admin_user)
 ):
-    """
-    Send an email notification about the submission status.
-    """
-    # Get the template for this status
-    template = email_service.get_status_template(status, submission_id, message)
+    """Get MCP status for a constitution."""
+    try:
+        status = await mcp_service.check_status(constitution_id)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check MCP status: {str(e)}")
+
+@router.post("/admin/mcp/test_integration")
+async def test_mcp_integration_endpoint(
+    current_user: User = Depends(get_admin_user)
+):
+    """Test MCP integration."""
+    try:
+        test_result = await mcp_service.check_status("test")
+        if "status" in test_result and test_result["status"] == "error":
+            return {"status": "error", "message": f"MCP connection failed: {test_result['message']}"}
+        return {"status": "success", "message": "MCP connection successful"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MCP integration test failed: {str(e)}")
+
+# --- Analytics Integration ---
+@router.post("/api/analytics/view/{constitution_id}")
+async def record_view_endpoint(
+    constitution_id: str = FastApiPath(...),
+    request: Request = Depends(analytics_protection)
+):
+    """Record a view of a constitution."""
+    # Check if view limit is exceeded
+    if not await ip_throttler.check_view_limit(request, constitution_id):
+        return {"status": "throttled", "message": "View limit reached. Try again later."}
     
-    # Send the email
-    success = await email_service.send_email_async(
-        to_email=email,
-        subject=template["subject"],
-        body_html=template["body_html"]
+    # Get client IP and hash it for privacy
+    client_ip = request.client.host
+    ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()
+    
+    # Record view (in a real implementation, this would call analytics_db)
+    from db.analytics_db import record_view
+    await record_view(
+        constitution_id=constitution_id,
+        user_id=None,  # Anonymous
+        ip_hash=ip_hash
     )
     
-    if success:
-        logging.info(f"Notification email sent to {email} for submission {submission_id} with status {status}")
-    else:
-        logging.error(f"Failed to send notification email to {email} for submission {submission_id}")
-    
-    # Update the notification log
-    await update_notification_log(submission_id, status, email)
+    return {"status": "success"}
 
-async def update_notification_log(submission_id: str, status: ReviewStatus, email: str):
-    """
-    Update the notification log in the database.
-    In production, this would use a real database.
-    """
-    # Simulate database update
-    print(f"Logged notification for submission {submission_id} with status {status} to {email}")
-    # In a real implementation, this would be a database call
+# --- Similarity Search Endpoints ---
 
-async def add_to_review_queue(
-    submission_id: str,
-    priority: str = "normal"
+@router.post("/api/constitutions/similar")
+async def get_similar_constitutions_endpoint(
+    text: str = Body(..., embed=True),
+    limit: int = Query(10, ge=1, le=50),
+    min_similarity: float = Query(0.5, ge=0.1, le=0.99)
 ):
-    """
-    Add a submission to the review queue.
-    In production, this would use a queue system or database table.
-    """
-    # Simulate adding to a review queue
-    print(f"Added submission {submission_id} to review queue with priority {priority}")
-    # In a real implementation, this might use a queue system
+    """Returns constitutions that are semantically similar to the provided text."""
+    try:
+        # Generate embedding for input text
+        query_embedding = await embedding_service.get_embedding(text)
+        
+        # Find similar constitutions
+        similar_results = await find_similar_constitutions(
+            embedding=query_embedding,
+            limit=limit,
+            min_similarity=min_similarity
+        )
+        
+        # Format results
+        similar_constitutions = []
+        for result in similar_results:
+            # Extract relevant excerpt
+            excerpt = embedding_service.find_relevant_excerpt(
+                text=await get_constitution_content_by_id(result['id']),
+                query=text
+            )
+            
+            similar_constitutions.append({
+                "id": result['id'],
+                "title": result['title'],
+                "similarity": result['similarity'],
+                "author": result['author_id'] or "Anonymous",
+                "description": result['description'],
+                "excerpt": excerpt,
+                "tags": result['tags'] if result['tags'][0] is not None else [],
+                "source": "marketplace",
+                "isStarred": False  # Client should check this client-side
+            })
+        
+        return similar_constitutions
+    except Exception as e:
+        logging.error(f"Error finding similar constitutions: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
 
-async def whitelist_for_mcp(submission_id: str, text: str):
-    """
-    Whitelist a constitution for use with MCP servers.
-    In production, this would interact with the MCP system.
-    """
-    # Simulate whitelisting
-    print(f"Whitelisting constitution {submission_id} for MCP servers")
-    # In a real implementation, this would interact with the MCP system
-
+@router.get("/api/constitutions/{constitution_id}/similar")
+async def get_similar_constitutions_by_id_endpoint(
+    constitution_id: str = FastApiPath(..., title="The constitution ID to find similar constitutions for"),
+    limit: int = Query(10, ge=1, le=50),
+    min_similarity: float = Query(0.5, ge=0.1, le=0.99)
+):
+    """Returns constitutions that are semantically similar to the specified constitution."""
+    try:
+        # Check if constitution exists
+        constitution = await get_constitution_by_id(constitution_id)
+        if not constitution:
+            raise HTTPException(status_code=404, detail=f"Constitution '{constitution_id}' not found.")
+        
+        # Get embedding for this constitution
+        async with pool.acquire() as conn:
+            embedding = await conn.fetchval(
+                "SELECT embedding FROM constitution_embeddings WHERE constitution_id = $1",
+                constitution_id
+            )
+        
+        if not embedding:
+            # Generate embedding if not found
+            embedding = await embedding_service.get_embedding(constitution['text'])
+            await store_constitution_embedding(constitution_id, embedding)
+        
+        # Find similar constitutions
+        similar_results = await find_similar_constitutions(
+            embedding=embedding,
+            limit=limit,
+            min_similarity=min_similarity
+        )
+        
+        # Format results (similar to previous endpoint)
+        similar_constitutions = []
+        for result in similar_results:
+            # Skip the original constitution
+            if result['id'] == constitution_id:
+                continue
+                
+            # Extract excerpt for context
+            excerpt = embedding_service.find_relevant_excerpt(
+                text=await get_constitution_content_by_id(result['id']),
+                query=constitution['text']
+            )
+            
+            similar_constitutions.append({
+                "id": result['id'],
+                "title": result['title'],
+                "similarity": result['similarity'],
+                "author": result['author_id'] or "Anonymous",
+                "description": result['description'],
+                "excerpt": excerpt,
+                "tags": result['tags'] if result['tags'][0] is not None else [],
+                "source": "marketplace",
+                "isStarred": False  # Client should check this client-side
+            })
+        
+        return similar_constitutions
+    except Exception as e:
+        logging.error(f"Error finding similar constitutions for {constitution_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
 
 # --- Constitution Relationship Endpoints ---
 
@@ -639,86 +777,117 @@ async def get_tags_endpoint():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch tags.")
 
+# --- Helper Functions ---
 
-# --- Similar Constitutions Endpoints ---
-
-@router.post("/api/constitutions/similar")
-async def get_similar_constitutions_endpoint(
-    text: str = Body(..., embed=True)
+async def send_submission_notification(
+    email: EmailStr, 
+    submission_id: str, 
+    status: ReviewStatus,
+    message: str
 ):
-    """Returns constitutions that are semantically similar to the provided text."""
-    try:
-        # Initialize embedding model (could be moved to startup)
-        # embedding_model = get_embedding_model()
-        
-        # Generate embedding for the input text
-        # query_embedding = embedding_model.embed_query(text)
-        
-        # Fetch all constitutions with their embeddings
-        # constitutions = await get_all_constitutions_with_embeddings()
-        
-        # Calculate similarity scores
-        # For now, generate mock data with simulated scores
-        similarity_scale = [0.98, 0.87, 0.76, 0.68, 0.62, 0.59, 0.52, 0.48]
-        similar_constitutions = []
-        
-        for i, similarity in enumerate(similarity_scale):
-            similar_constitutions.append({
-                "id": f"similar-{i+1}",
-                "title": f"Similar Constitution {i+1}",
-                "similarity": similarity,
-                "author": f"Author {i+1}",
-                "description": f"A constitution with {round(similarity * 100)}% semantic similarity to the input text.",
-                "excerpt": "This is an excerpt that would show matched context...",
-                "tags": ["safety", "ethics"] if i % 2 == 0 else ["corporate", "governance"],
-                "source": "marketplace",
-                "isStarred": i == 1  # Example: one constitution is already starred
-            })
-        
-        # Add some local constitutions for demonstration
-        similar_constitutions.append({
-            "id": "local-1",
-            "title": "My Similar Constitution",
-            "similarity": 0.82,
-            "author": "You",
-            "description": "One of your constitutions that is semantically similar",
-            "tags": ["personal", "draft"],
-            "source": "local"
-        })
-        
-        return similar_constitutions
-    except Exception as e:
-        logging.error(f"Error finding similar constitutions: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
+    """
+    Send an email notification about the submission status.
+    """
+    # Get the template for this status
+    template = email_service.get_status_template(status, submission_id, message)
+    
+    # Send the email
+    success = await email_service.send_email_async(
+        to_email=email,
+        subject=template["subject"],
+        body_html=template["body_html"]
+    )
+    
+    if success:
+        logging.info(f"Notification email sent to {email} for submission {submission_id} with status {status}")
+    else:
+        logging.error(f"Failed to send notification email to {email} for submission {submission_id}")
+    
+    # Update the notification log
+    await update_notification_log(submission_id, status, email)
 
-@router.get("/api/constitutions/{constitution_id}/similar")
-async def get_similar_constitutions_by_id_endpoint(
-    constitution_id: str = FastApiPath(..., title="The constitution ID to find similar constitutions for")
+async def update_notification_log(submission_id: str, status: ReviewStatus, email: str):
+    """
+    Update the notification log in the database.
+    In production, this would use a real database.
+    """
+    # Simulate database update
+    print(f"Logged notification for submission {submission_id} with status {status} to {email}")
+    # In a real implementation, this would be a database call
+
+async def add_to_review_queue(
+    submission_id: str,
+    priority: str = "normal"
 ):
-    """Returns constitutions that are semantically similar to the specified constitution."""
+    """
+    Add a submission to the review queue.
+    In production, this would use a queue system or database table.
+    """
+    # Simulate adding to a review queue
+    print(f"Added submission {submission_id} to review queue with priority {priority}")
+    # In a real implementation, this might use a queue system
+
+async def whitelist_for_mcp(submission_id: str, text: str):
+    """
+    Whitelist a constitution for use with MCP servers.
+    """
     try:
-        # This would fetch the specified constitution and then use its text for comparison
-        # For now, generate mock data
+        # Get full submission details
+        submission = await get_submission_by_id(submission_id)
+        if not submission:
+            logging.error(f"Cannot whitelist {submission_id}: Submission not found")
+            return False
         
-        similarity_scale = [0.95, 0.89, 0.78, 0.72, 0.65, 0.57, 0.51]
-        similar_constitutions = []
+        # Prepare metadata
+        metadata = {
+            "title": submission.title,
+            "description": submission.description,
+            "author_email": submission.email,
+            "tags": submission.tags,
+            "approved_at": datetime.now().isoformat(),
+            "platform": "Creeds.World"
+        }
         
-        for i, similarity in enumerate(similarity_scale):
-            similar_constitutions.append({
-                "id": f"similar-{i+1}",
-                "title": f"Similar to {constitution_id} - Constitution {i+1}",
-                "similarity": similarity,
-                "author": f"Author {i+1}",
-                "description": f"A constitution with {round(similarity * 100)}% semantic similarity to {constitution_id}.",
-                "excerpt": "This is an excerpt that would show matched context...",
-                "tags": ["safety", "ethics"] if i % 2 == 0 else ["corporate", "governance"],
-                "source": "marketplace",
-                "isStarred": i == 2  # Example: one constitution is already starred
-            })
-            
-        return similar_constitutions
+        # Register with MCP
+        success = await mcp_service.register_constitution(submission_id, text, metadata)
+        
+        if success:
+            # Update local database to mark as whitelisted
+            await update_mcp_status(submission_id, "whitelisted")
+            logging.info(f"Constitution {submission_id} successfully whitelisted for MCP")
+        
+        return success
     except Exception as e:
-        logging.error(f"Error finding similar constitutions for {constitution_id}: {e}")
+        logging.error(f"Error whitelisting constitution {submission_id}: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
+        return False
+
+async def generate_and_store_embedding(submission_id: str, text: str):
+    """
+    Generate embedding vector for a constitution text and store it.
+    """
+    try:
+        # Generate embedding
+        embedding = await embedding_service.get_embedding(text)
+        
+        # Store in database
+        await store_constitution_embedding(submission_id, embedding)
+        
+        logging.info(f"Generated and stored embedding for constitution {submission_id}")
+    except Exception as e:
+        logging.error(f"Error generating embedding for {submission_id}: {e}")
+        traceback.print_exc()
+
+async def get_constitution_content_by_id(constitution_id: str) -> str:
+    """
+    Get the content of a constitution by its ID.
+    """
+    try:
+        # In a real implementation, this would fetch from database
+        submission = await get_submission_by_id(constitution_id)
+        if submission:
+            return submission.text
+        return "Constitution text not found."
+    except Exception as e:
+        logging.error(f"Error fetching constitution content by ID {constitution_id}: {e}")
+        return "Error fetching constitution content."
