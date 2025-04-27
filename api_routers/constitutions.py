@@ -4,15 +4,25 @@ import traceback
 import re
 import asyncio
 import uuid
+import hashlib
+import base64
 from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Optional
-from fastapi import APIRouter, HTTPException, Path as FastApiPath, Body, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Path as FastApiPath, Body, Query, BackgroundTasks, Depends
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, EmailStr
 
 # Project-specific imports
 from backend_models import ConstitutionHierarchy
+from db.constitution_db import (
+    store_submission, update_submission, get_submission_by_id, 
+    get_all_pending_reviews, store_shareable_link
+)
+from services.superego import SuperegoService
+from services.email_service import EmailService
+from auth.auth import get_admin_user, User
+
 try:
     from constitution_utils import get_constitution_hierarchy, get_constitution_content
 except ImportError as e:
@@ -21,6 +31,19 @@ except ImportError as e:
     raise
 
 router = APIRouter()
+
+# Initialize services
+superego_service = SuperegoService()
+
+# Initialize email service (should be done at app startup with config values)
+email_service = EmailService(
+    smtp_server="smtp.example.com",  # Replace with actual SMTP server
+    smtp_port=587,                  # Replace with actual port
+    username="notifications@creeds.world",  # Replace with actual username
+    password="your-password",       # Replace with actual password
+    from_email="notifications@creeds.world",  # Replace with actual email
+    use_tls=True
+)
 
 @router.get("/api/constitutions", response_model=ConstitutionHierarchy)
 async def get_constitutions_endpoint():
@@ -102,9 +125,6 @@ class ReviewSubmission(BaseModel):
     tags: List[str] = []
     is_whitelisted: bool = False
 
-# Extend the existing router
-# router = APIRouter()
-
 # --- Submission Endpoints ---
 
 @router.post("/constitutions", response_model=SubmissionResponse)
@@ -120,7 +140,7 @@ async def submit_constitution(
     """
     try:
         # Run superego check first
-        validation_result = await run_superego_check(submission.text)
+        validation_result = await superego_service.check_constitution(submission.text)
         
         # Generate submission ID
         submission_id = f"sub_{uuid.uuid4().hex[:10]}"
@@ -140,8 +160,22 @@ async def submit_constitution(
             tags=submission.tags
         )
         
-        # Store in database (simulation)
+        # Store in database
         await store_submission(review_submission)
+        
+        # Generate shareable link for unlisted constitutions
+        shareable_link = None
+        if submission.is_unlisted:
+            # Create a secure hash of the submission ID
+            hash_object = hashlib.sha256(submission_id.encode())
+            hash_digest = hash_object.digest()
+            # Convert to a URL-safe base64 string and take first 16 chars
+            hash_b64 = base64.urlsafe_b64encode(hash_digest).decode()[:16]
+            # Create the shareable link
+            shareable_link = f"https://creeds.world/c/{hash_b64}"
+            
+            # Store the link association in the database
+            await store_shareable_link(submission_id, hash_b64)
         
         # If public submission, add to review queue
         if not submission.is_private:
@@ -165,11 +199,6 @@ async def submit_constitution(
                     message="Your constitution has been received and is pending review."
                 )
         
-        # Generate shareable link for unlisted constitutions
-        shareable_link = None
-        if submission.is_unlisted:
-            shareable_link = f"https://creeds.world/c/{submission_id}"
-        
         return SubmissionResponse(
             status="success",
             message="Constitution submitted successfully" + 
@@ -192,128 +221,94 @@ async def check_constitution(
     Run a preliminary superego check on a constitution without saving it.
     """
     try:
-        result = await run_superego_check(text)
+        result = await superego_service.check_constitution(text)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run superego check: {str(e)}")
 
-# --- Enhanced Superego Check ---
-async def run_superego_check(text: str) -> SuperegoCheck:
+@router.post("/constitutions/test")
+async def test_constitution(
+    constitution_text: str = Body(..., embed=True),
+    user_input: str = Body(..., embed=True)
+):
     """
-    Run a comprehensive superego check on the constitution text.
-    In production, this would call the actual superego system.
+    Test a constitution in the sandbox environment.
+    Returns a simulated AI response based on the constitution.
+    """
+    try:
+        # Validate the constitution format first
+        validation_result = await superego_service.check_constitution(constitution_text)
+        
+        # Prepare the test configuration
+        test_config = {
+            "constitution": constitution_text,
+            "adherence_level": 5,  # Maximum adherence by default
+            "user_input": user_input
+        }
+        
+        # Call the sandbox testing service
+        response = await run_sandbox_test(test_config)
+        
+        return {
+            "status": "success",
+            "validation": validation_result,
+            "response": response
+        }
+    except Exception as e:
+        logging.error(f"Failed to run constitution test: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to test constitution: {str(e)}")
+
+async def run_sandbox_test(config):
+    """
+    Run a test in the sandbox environment.
+    This is a placeholder for the actual AI testing service.
     """
     # Simulate processing time
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1)
     
-    # Initialize scores and feedback lists
-    score = 85
-    issues = []
-    warnings = []
-    recommendations = []
-    dimensions = {
-        "safety": 85,
-        "clarity": 80,
-        "completeness": 75,
-        "compliance": 90
-    }
+    # Example response generation - very basic simulation
+    constitution = config["constitution"]
+    user_input = config["user_input"]
     
-    # Format validation checks
-    if len(text) < 100:
-        score -= 20
-        dimensions["completeness"] -= 30
-        issues.append("Constitution is too short (minimum 100 characters recommended).")
-    
-    if '#' not in text:
-        score -= 10
-        dimensions["clarity"] -= 15
-        warnings.append("No heading structure found. Consider using markdown headings for better organization.")
-    
-    # Content analysis checks
-    problematic_terms = [
-        ("ignore safety", "Constitution encourages ignoring safety guidelines", 25, "safety"),
-        ("bypass", "Constitution may encourage bypassing intended constraints", 15, "compliance"),
-        ("dangerous", "Constitution references dangerous content without appropriate safeguards", 20, "safety"),
-        ("illegal content", "Constitution references illegal content", 30, "compliance"),
-        ("harmful", "Constitution contains potentially harmful guidance", 20, "safety")
-    ]
-    
-    for term, issue, penalty, dimension in problematic_terms:
-        if term.lower() in text.lower():
-            score = max(0, score - penalty)
-            dimensions[dimension] = max(0, dimensions[dimension] - penalty)
-            issues.append(issue)
-    
-    # Structure analysis
-    section_patterns = {
-        "principles": r'#+ .*\b(principles|values|core|tenets)\b',
-        "guidelines": r'#+ .*\b(guidelines|rules|instructions)\b',
-        "exceptions": r'#+ .*\b(exceptions|limitations|bounds)\b'
-    }
-    
-    missing_sections = []
-    for section_name, pattern in section_patterns.items():
-        if not re.search(pattern, text, re.IGNORECASE):
-            missing_sections.append(section_name)
-    
-    if missing_sections:
-        dimensions["completeness"] -= 5 * len(missing_sections)
-        recommendations.append(f"Consider adding these sections: {', '.join(missing_sections)}")
-    
-    # Add standard recommendations
-    if not issues and not warnings:
-        recommendations.append("Your constitution looks good! Consider getting feedback from others before finalizing.")
+    # Extremely simple response generation based on keywords
+    if "dangerous" in user_input.lower() and "safety" in constitution.lower():
+        return "I cannot assist with that request as it may involve dangerous content, which goes against my constitution's safety guidelines."
+    elif "creative" in user_input.lower() and "creativity" in constitution.lower():
+        return "Here's a creative response based on your request, guided by my constitution's creativity principles..."
     else:
-        recommendations.append("Address the identified issues to improve your constitution's effectiveness.")
-    
-    # Standard passed checks
-    passed_checks = [
-        "Basic format validation",
-        "Structure check",
-        "Minimum content check"
-    ]
-    
-    if not issues:
-        passed_checks.append("Content safety check")
-    
-    # Determine if the constitution should be flagged for special review
-    flagged = len(issues) > 0 or score < 70
-    
-    return SuperegoCheck(
-        score=score,
-        issues=issues,
-        warnings=warnings,
-        recommendations=recommendations,
-        passedChecks=passed_checks,
-        dimensions=dimensions,
-        flagged=flagged
-    )
+        return "I've processed your request according to my constitution guidelines. [This is a simulated response for testing purposes]"
 
 # --- Enhanced Review Endpoints ---
 @router.get("/admin/reviews/pending", response_model=List[ReviewSubmission])
-async def get_pending_reviews():
+async def get_pending_reviews(current_user: User = Depends(get_admin_user)):
     """Get all pending constitution reviews."""
-    # In production, would fetch from database
-    # For demo, return simulated data
+    # Fetch from database
     return await get_all_pending_reviews()
 
 @router.get("/admin/reviews/submissions/{submission_id}", response_model=ReviewSubmission)
-async def get_submission_details(submission_id: str):
+async def get_submission_details(
+    submission_id: str,
+    current_user: User = Depends(get_admin_user)
+):
     """Get detailed information about a specific submission."""
-    # In production, would fetch from database
+    # Fetch from database
     submission = await get_submission_by_id(submission_id)
     if not submission:
         raise HTTPException(status_code=404, detail=f"Submission '{submission_id}' not found.")
     return submission
 
 @router.post("/admin/reviews/submissions/{submission_id}/check", response_model=SuperegoCheck)
-async def run_review_check(submission_id: str):
+async def run_review_check(
+    submission_id: str,
+    current_user: User = Depends(get_admin_user)
+):
     """Run a superego check on a specific submission."""
     submission = await get_submission_by_id(submission_id)
     if not submission:
         raise HTTPException(status_code=404, detail=f"Submission '{submission_id}' not found.")
     
-    result = await run_superego_check(submission.text)
+    result = await superego_service.check_constitution(submission.text)
     
     # Update the submission with the check result
     submission.superego_result = result
@@ -326,6 +321,7 @@ async def update_submission_status(
     submission_id: str,
     status: ReviewStatus,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_admin_user),
     reviewer_id: Optional[str] = None,
     comments: Optional[str] = None
 ):
@@ -340,6 +336,8 @@ async def update_submission_status(
     
     if reviewer_id:
         submission.reviewer_id = reviewer_id
+    else:
+        submission.reviewer_id = current_user.username
     
     if comments:
         submission.reviewer_comments = comments
@@ -363,7 +361,8 @@ async def update_submission_status(
 async def approve_submission(
     submission_id: str,
     data: dict = Body(...),
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_admin_user)
 ):
     """Approve a submission and add it to the marketplace."""
     submission = await get_submission_by_id(submission_id)
@@ -379,6 +378,7 @@ async def approve_submission(
     submission.status = ReviewStatus.APPROVED
     submission.updated_at = datetime.now()
     submission.reviewer_comments = comment
+    submission.reviewer_id = current_user.username
     submission.tags = tags
     submission.is_whitelisted = is_whitelisted
     
@@ -405,7 +405,8 @@ async def approve_submission(
 async def reject_submission(
     submission_id: str,
     data: dict = Body(...),
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_admin_user)
 ):
     """Reject a submission."""
     submission = await get_submission_by_id(submission_id)
@@ -420,6 +421,7 @@ async def reject_submission(
     submission.status = ReviewStatus.REJECTED
     submission.updated_at = datetime.now()
     submission.reviewer_comments = comment
+    submission.reviewer_id = current_user.username
     
     # Save the updated submission
     await update_submission(submission)
@@ -440,7 +442,8 @@ async def reject_submission(
 async def request_submission_changes(
     submission_id: str,
     data: dict = Body(...),
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_admin_user)
 ):
     """Request changes to a submission."""
     submission = await get_submission_by_id(submission_id)
@@ -455,6 +458,7 @@ async def request_submission_changes(
     submission.status = ReviewStatus.REQUIRES_CHANGES
     submission.updated_at = datetime.now()
     submission.reviewer_comments = comment
+    submission.reviewer_id = current_user.username
     
     # Save the updated submission
     await update_submission(submission)
@@ -473,66 +477,41 @@ async def request_submission_changes(
 
 # --- Helper Functions ---
 
-async def store_submission(submission: ReviewSubmission):
+async def send_submission_notification(
+    email: EmailStr, 
+    submission_id: str, 
+    status: ReviewStatus,
+    message: str
+):
     """
-    Store a submission in the database.
-    In production, this would use a real database.
+    Send an email notification about the submission status.
     """
-    # Simulate database storage
-    print(f"Storing submission {submission.id} with status {submission.status}")
-    # In a real implementation, this would be a database call
+    # Get the template for this status
+    template = email_service.get_status_template(status, submission_id, message)
+    
+    # Send the email
+    success = await email_service.send_email_async(
+        to_email=email,
+        subject=template["subject"],
+        body_html=template["body_html"]
+    )
+    
+    if success:
+        logging.info(f"Notification email sent to {email} for submission {submission_id} with status {status}")
+    else:
+        logging.error(f"Failed to send notification email to {email} for submission {submission_id}")
+    
+    # Update the notification log
+    await update_notification_log(submission_id, status, email)
 
-async def update_submission(submission: ReviewSubmission):
+async def update_notification_log(submission_id: str, status: ReviewStatus, email: str):
     """
-    Update a submission in the database.
+    Update the notification log in the database.
     In production, this would use a real database.
     """
     # Simulate database update
-    print(f"Updating submission {submission.id} with status {submission.status}")
+    print(f"Logged notification for submission {submission_id} with status {status} to {email}")
     # In a real implementation, this would be a database call
-
-async def get_submission_by_id(submission_id: str) -> Optional[ReviewSubmission]:
-    """
-    Get a submission by ID from the database.
-    In production, this would use a real database.
-    """
-    # Simulate database lookup
-    # In a real implementation, this would be a database call
-    # For now, return a mock submission
-    return ReviewSubmission(
-        id=submission_id,
-        text="# Sample Constitution\n\nThis is a sample constitution text for testing.",
-        title="Sample Constitution",
-        description="A sample constitution for testing purposes.",
-        email="test@example.com",
-        status=ReviewStatus.PENDING,
-        submitted_at=datetime.now(),
-        updated_at=datetime.now(),
-        tags=["sample", "test"]
-    )
-
-async def get_all_pending_reviews() -> List[ReviewSubmission]:
-    """
-    Get all pending reviews from the database.
-    In production, this would use a real database.
-    """
-    # Simulate database query
-    # In a real implementation, this would be a database call
-    # For now, return mock data
-    return [
-        ReviewSubmission(
-            id=f"sub_{i}",
-            text=f"# Test Constitution {i}\n\nThis is test constitution {i}.",
-            title=f"Test Constitution {i}",
-            description=f"Description for test constitution {i}.",
-            email="test@example.com",
-            status=ReviewStatus.PENDING,
-            submitted_at=datetime.now(),
-            updated_at=datetime.now(),
-            tags=["test"]
-        )
-        for i in range(1, 5)
-    ]
 
 async def add_to_review_queue(
     submission_id: str,
@@ -546,119 +525,6 @@ async def add_to_review_queue(
     print(f"Added submission {submission_id} to review queue with priority {priority}")
     # In a real implementation, this might use a queue system
 
-async def send_submission_notification(
-    email: EmailStr, 
-    submission_id: str, 
-    status: ReviewStatus,
-    message: str
-):
-    """
-    Send an email notification about the submission status.
-    In production, this would use a proper email service.
-    """
-    # Define templates for different notification types
-    templates = {
-        ReviewStatus.PENDING: {
-            "subject": "Constitution Submission Received",
-            "template": """
-                Thank you for submitting your constitution to Creeds.World!
-                
-                Your submission (ID: {submission_id}) has been received and is pending review.
-                We'll notify you when its status changes.
-                
-                {message}
-                
-                You can check the status of your submission at: https://creeds.world/submissions
-                
-                Thank you,
-                The Creeds.World Team
-            """
-        },
-        ReviewStatus.UNDER_REVIEW: {
-            "subject": "Your Constitution is Under Review",
-            "template": """
-                Your constitution submission (ID: {submission_id}) is now being reviewed by our team.
-                
-                {message}
-                
-                We'll notify you once the review is complete.
-                
-                Thank you for your patience,
-                The Creeds.World Team
-            """
-        },
-        ReviewStatus.APPROVED: {
-            "subject": "Constitution Approved!",
-            "template": """
-                Good news! Your constitution submission (ID: {submission_id}) has been approved.
-                
-                {message}
-                
-                Your constitution is now available in the Marketplace and can be used with MCP-compatible systems.
-                
-                View it here: https://creeds.world/marketplace/constitutions/{submission_id}
-                
-                Thank you,
-                The Creeds.World Team
-            """
-        },
-        ReviewStatus.REJECTED: {
-            "subject": "Constitution Submission Update",
-            "template": """
-                We've completed the review of your constitution submission (ID: {submission_id}).
-                
-                Unfortunately, we couldn't approve it at this time.
-                
-                {message}
-                
-                You can submit a revised version addressing these concerns at any time.
-                
-                Thank you,
-                The Creeds.World Team
-            """
-        },
-        ReviewStatus.REQUIRES_CHANGES: {
-            "subject": "Constitution Submission Needs Changes",
-            "template": """
-                We've reviewed your constitution submission (ID: {submission_id}) and would like to suggest some changes.
-                
-                {message}
-                
-                Please revise your submission and resubmit it for review.
-                
-                Thank you,
-                The Creeds.World Team
-            """
-        }
-    }
-    
-    # Get template for this status
-    template_data = templates.get(status, templates[ReviewStatus.PENDING])
-    subject = template_data["subject"]
-    body = template_data["template"].format(
-        submission_id=submission_id,
-        message=message
-    )
-    
-    # In production, use a proper email service (e.g., SendGrid, AWS SES)
-    # For now, just log the email we would send
-    print(f"\n--- Would send email to {email} ---")
-    print(f"Subject: {subject}")
-    print(f"Body:\n{body}")
-    print("-----------------------------------\n")
-    
-    # In production, update the database to track that notification was sent
-    await update_notification_log(submission_id, status, email)
-
-async def update_notification_log(submission_id: str, status: ReviewStatus, email: str):
-    """
-    Update the notification log in the database.
-    In production, this would use a real database.
-    """
-    # Simulate database update
-    print(f"Logged notification for submission {submission_id} with status {status} to {email}")
-    # In a real implementation, this would be a database call
-
 async def whitelist_for_mcp(submission_id: str, text: str):
     """
     Whitelist a constitution for use with MCP servers.
@@ -669,7 +535,7 @@ async def whitelist_for_mcp(submission_id: str, text: str):
     # In a real implementation, this would interact with the MCP system
 
 
-# Add to api_routers/constitutions.py
+# --- Constitution Relationship Endpoints ---
 
 @router.get("/api/constitutions/{constitution_id}/relationships")
 async def get_constitution_relationships_endpoint(
@@ -744,7 +610,7 @@ async def get_constitution_relationships_endpoint(
         raise HTTPException(status_code=500, detail=f"Failed to fetch constitution relationships.")
 
 
-# Add to api_routers/constitutions.py
+# --- Tag Endpoints ---
 
 @router.get("/api/tags")
 async def get_tags_endpoint():
@@ -773,15 +639,26 @@ async def get_tags_endpoint():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch tags.")
 
+
+# --- Similar Constitutions Endpoints ---
+
 @router.post("/api/constitutions/similar")
 async def get_similar_constitutions_endpoint(
     text: str = Body(..., embed=True)
 ):
     """Returns constitutions that are semantically similar to the provided text."""
     try:
-        # This would use an embeddings model in the real implementation
-        # For now, generate mock data
+        # Initialize embedding model (could be moved to startup)
+        # embedding_model = get_embedding_model()
         
+        # Generate embedding for the input text
+        # query_embedding = embedding_model.embed_query(text)
+        
+        # Fetch all constitutions with their embeddings
+        # constitutions = await get_all_constitutions_with_embeddings()
+        
+        # Calculate similarity scores
+        # For now, generate mock data with simulated scores
         similarity_scale = [0.98, 0.87, 0.76, 0.68, 0.62, 0.59, 0.52, 0.48]
         similar_constitutions = []
         

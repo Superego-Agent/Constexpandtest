@@ -394,3 +394,44 @@ export const fetchTags = (
         )
     );
 };
+
+@router.post("/api/constitutions/similar")
+async def get_similar_constitutions_endpoint(
+    text: str = Body(..., embed=True)
+):
+    """Returns constitutions that are semantically similar to the provided text."""
+    try:
+        # Initialize embedding model (could be moved to startup)
+        embedding_model = get_embedding_model()
+        
+        # Generate embedding for the input text
+        query_embedding = embedding_model.embed_query(text)
+        
+        # Fetch all constitutions with their embeddings
+        constitutions = await get_all_constitutions_with_embeddings()
+        
+        # Calculate similarity scores
+        scored_constitutions = []
+        for constitution in constitutions:
+            similarity = cosine_similarity(query_embedding, constitution.embedding)
+            if similarity > 0.4:  # Threshold for minimum similarity
+                scored_constitutions.append({
+                    "id": constitution.id,
+                    "title": constitution.title,
+                    "similarity": float(similarity),
+                    "author": constitution.author,
+                    "description": constitution.description,
+                    "excerpt": get_excerpt(constitution.text, text),
+                    "tags": constitution.tags,
+                    "source": "marketplace",
+                    "isStarred": False  # Could be determined based on user
+                })
+        
+        # Sort by similarity (highest first)
+        scored_constitutions.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        return scored_constitutions[:10]  # Limit to top 10 matches
+    except Exception as e:
+        logging.error(f"Error finding similar constitutions: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to find similar constitutions.")
